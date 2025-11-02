@@ -51,6 +51,9 @@ import android.content.pm.PackageManager
 import android.Manifest
 import androidx.browser.customtabs.CustomTabsIntent
 import android.net.Uri
+import androidx.navigation.NavType
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.navArgument
 
 
 class MainActivity : ComponentActivity() {
@@ -74,22 +77,43 @@ class MainActivity : ComponentActivity() {
                 // Determine starting destination based on auth state
                 val startDestination = if (authService.isUserSignedIn) "main" else "login"
 
-                NavHost(navController = navController, startDestination = startDestination) {
+                NavHost(navController = navController, startDestination = "main?selectedTab=0") {
+
                     composable("login") {
                         LoginScreen(navController)
                     }
+
                     composable("signup") {
                         SignUpScreen(navController)
                     }
-                    composable("main") {
+
+                    // ✅ Edit Profile Screen
+                    composable("editProfile") {
+                        EditProfileScreen(navController = navController)
+                    }
+
+                    // ✅ Main route using path argument (stable & type-safe)
+                    composable(
+                        route = "main?selectedTab={selectedTab}",
+                        arguments = listOf(
+                            navArgument("selectedTab") {
+                                type = NavType.IntType
+                                defaultValue = 0
+                            }
+                        )
+                    ) { backStackEntry ->
+                        val selectedTab = backStackEntry.arguments?.getInt("selectedTab") ?: 0
+
                         MainScreen(
+                            navController = navController,
                             onLogout = {
                                 navController.navigate("login") {
-                                    popUpTo("main") { inclusive = true }
+                                    popUpTo("main/{selectedTab}") { inclusive = true }
                                 }
                             },
                             isDark = isDark,
-                            onToggleTheme = { isDark = !isDark }
+                            onToggleTheme = { isDark = !isDark },
+                            initialTab = selectedTab
                         )
                     }
                 }
@@ -113,7 +137,9 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun MainScreen(
+    navController: NavController,
     onLogout: () -> Unit,
+    initialTab: Int = 0,
     isDark: Boolean,
     onToggleTheme: () -> Unit,
     voiceInput: String? = null,
@@ -122,7 +148,11 @@ fun MainScreen(
 ) {
     val context = LocalContext.current
     var voiceInputResult by remember { mutableStateOf<String?>(null) }
-    var isScraping by remember { mutableStateOf(false) } // Correctly declared here
+    var isScraping by remember { mutableStateOf(false) }
+    val navBackStackEntry = navController.currentBackStackEntryAsState()
+    val selectedTabArg = navBackStackEntry.value?.arguments?.getString("selectedTab")?.toIntOrNull()
+
+    var selectedTab by rememberSaveable { mutableStateOf(selectedTabArg ?: 0) }
 
     // Activity Result Launcher for Speech-to-Text
     val speechRecognizerLauncher = rememberLauncherForActivityResult(
@@ -150,7 +180,7 @@ fun MainScreen(
     }
 
 
-    // NEW: 1. Permission Launcher (To request RECORD_AUDIO permission)
+    //Permission Launcher (To request RECORD_AUDIO permission)
     var showPermissionDeniedMessage by remember { mutableStateOf(false) }
 
     val audioPermissionLauncher = rememberLauncherForActivityResult(
@@ -164,11 +194,11 @@ fun MainScreen(
     }
 
 
-    //  Function passed to ChatContent (Checks permission before starting)
+    //Function passed to ChatContent (Checks permission before starting)
     val handleMicClick: () -> Unit = {
         when {
             ContextCompat.checkSelfPermission(
-                context, // Use the context variable
+                context,
                 Manifest.permission.RECORD_AUDIO
             ) == PackageManager.PERMISSION_GRANTED -> {
                 startVoiceInput()
@@ -178,7 +208,6 @@ fun MainScreen(
             }
         }
     }
-    var selectedTab by remember { mutableStateOf(0) }
     var showChatHistory by remember { mutableStateOf(false) }
 
     // Initialize the service instance and coroutine scope
@@ -202,35 +231,35 @@ fun MainScreen(
 
     // Function to launch the Custom Tab browser
     val launchInAppBrowser: (String) -> Unit = { url ->
-        // 1. Set the URL to open the WebView screen
+        // Set the URL to open the WebView screen
         webViewUrl = url
-        // 2. Display the instruction banner
+        // Display the instruction banner
         browserInstructionMessage = degreeworksInstruction
     }
 
-    // ⭐ NEW: Function to close the WebView
+    // Function to close the WebView
     val closeWebView: () -> Unit = {
         webViewUrl = null
         browserInstructionMessage = null // Also dismiss the banner
         isScraping = false
     }
 
-    // 🌟 NEW: Handler for receiving HTML from WebViewScreen
+    // Handler for receiving HTML from WebViewScreen
     val handleHtmlScraped: (String) -> Unit = { html ->
-        // 1. Close the WebView
+        //  Close the WebView
         closeWebView()
 
-        // 2. Show loading indicator
+        //Show loading indicator
         isScraping = true
 
-        // 3. Start the API call in a coroutine
+        // Start the API call in a coroutine
         scope.launch {
             Log.d("Scrape", "Received HTML. Initiating API call.")
 
             // Calls the new function in OpenAIService
             val success = openAIService.scrapeAndSaveDegreeData(html)
 
-            // 4. Update UI/Chat based on result
+            // Update UI/Chat based on result
             isScraping = false // Turn off loading
 
             val resultMessage = if (success) {
@@ -290,22 +319,15 @@ fun MainScreen(
 
     Scaffold(
         topBar = {
-            // ⭐ 1. Wrap the entire TopAppBar block and the new banner in a Column
+
             Column {
-                TopAppBar( // <-- This is the TopAppBar you showed
+                TopAppBar(
                     title = {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            // Assuming R.drawable.msu_logo exists
-                            // Image(
-                            //     painter = painterResource(id = R.drawable.msu_logo),
-                            //     contentDescription = "MSU Logo",
-                            //     modifier = Modifier
-                            //         .height(32.dp)
-                            //         .padding(end = 12.dp)
-                            // )
+
 
                             // Professional title styling
                             Text(
@@ -346,7 +368,7 @@ fun MainScreen(
                                 Spacer(modifier = Modifier.width(8.dp))
                             }
                         }
-                    }, // <-- END of TopAppBar title block
+                    },
 
                     actions = {
                         // Theme toggle with professional styling
@@ -454,15 +476,15 @@ fun MainScreen(
         }
     ) { inner ->
         if (webViewUrl != null) {
-            // Priority 1: Show the WebView (Appears below the banner)
             WebViewScreen(
                 url = webViewUrl!!,
                 onClose = closeWebView,
-                onHtmlScraped = handleHtmlScraped,
-                modifier = Modifier.padding(inner).fillMaxSize()
-            )
+                modifier = Modifier
+                    .padding(inner)
+                    .fillMaxSize())
+
         } else {
-            // Priority 2: Show the currently selected tab content
+            // Show the currently selected tab content
             when (selectedTab) {
                 0 -> {
                     if (isScraping) {
@@ -478,7 +500,7 @@ fun MainScreen(
                                 Text("Analyzing Degreeworks data...", style = MaterialTheme.typography.titleMedium)
                             }
                         }
-                    } else { // <--- CRITICAL FIX: ELSE block handles ChatContent when NOT scraping
+                    } else {
                         // Find the chat session
                         val currentChat = chatSessions.find { it.id == currentChatId } ?: chatSessions.firstOrNull()
 
@@ -540,7 +562,7 @@ fun MainScreen(
                                 CircularProgressIndicator()
                             }
                         }
-                    } // <--- END of the ELSE block (Chat Content)
+                    }
                 }
 
                 1 -> CurriculumContent(
@@ -549,6 +571,7 @@ fun MainScreen(
                 )
                 2 -> ProfileContent(
                     modifier = Modifier.padding(inner),
+                    onEditProfile = { navController.navigate("editProfile") },
                     onLogout = onLogout
                 )
             }
@@ -572,13 +595,13 @@ fun MainScreen(
                     chatToDelete?.let { session ->
                         scope.launch {
                             try {
-                                // 1. Delete from Firestore
+                                // delete fromm Firestore
                                 openAIService.deleteChat(session.id)
 
-                                // 2. Update local state ONLY on success
+                                // Update local state ONLY on success
                                 chatSessions.removeAll { it.id == chatId }
 
-                                // 3. Handle selection change
+                                // Handle selection change
                                 if (currentChatId == chatId && chatSessions.isNotEmpty()) {
                                     currentChatId = chatSessions[0].id
                                 } else if (chatSessions.isEmpty()) {
@@ -597,7 +620,6 @@ fun MainScreen(
                                 }
                             } catch (e: Exception) {
                                 Log.e("MainScreen", "Failed to delete chat from Firestore: ${e.message}")
-                                // Optionally show a Snackbar to the user here
                             }
                         }
                     } ?: run {

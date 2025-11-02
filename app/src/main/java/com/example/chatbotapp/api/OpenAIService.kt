@@ -45,7 +45,7 @@ class OpenAIService {
 
         // IMPORTANT: Change this IP/Port to match your running server setup
         val request = Request.Builder()
-            .url("http://10.254.56.239:8000/scrape")
+            .url("http://192.168.1.240:8000/scrape")
             .post(body)
             .build()
 
@@ -98,11 +98,11 @@ class OpenAIService {
         val userId = currentUserId ?: return false // Must have a logged-in user
 
         return try {
-            // 1. Get the reference to the specific chat document
+            //  Get the reference to the specific chat document
             val chatRef = db.collection("users").document(userId)
                 .collection("chats").document(chatSession.id)
 
-            // 2. Update the ChatSession document (mostly to update the ServerTimestamp)
+            // Update the ChatSession document (mostly to update the ServerTimestamp)
             val sessionUpdates = mapOf(
                 "title" to chatSession.title,
                 // ServerTimestamp will be updated automatically due to @ServerTimestamp in ChatSession
@@ -110,7 +110,7 @@ class OpenAIService {
             )
             chatRef.set(sessionUpdates, com.google.firebase.firestore.SetOptions.merge()).await()
 
-            // 3. Add the new message to the 'messages' subcollection
+            // Add the new message to the 'messages' subcollection
             chatRef.collection("messages").add(newMessage).await()
 
             Log.d(TAG, "Chat session and message saved successfully.")
@@ -122,33 +122,32 @@ class OpenAIService {
     }
 
     // function to fetch a user's chat sessions
-    // New function to fetch a user's chat sessions AND all associated messages
     suspend fun fetchChatSessions(): List<ChatSession> {
         val userId = currentUserId ?: return emptyList()
         val fetchedSessions = mutableListOf<ChatSession>() // 👈 1. Use a mutable list to build the result
 
         return try {
-            // 1. Fetch all ChatSession documents (title, metadata)
+            //  Fetch all ChatSession documents (title, metadata)
             val sessionsSnapshot = db.collection("users").document(userId)
                 .collection("chats")
                 .orderBy("lastUpdatedTimestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
                 .get()
                 .await()
 
-            // 2. Iterate through documents and fetch messages for each
+            // Iterate through documents and fetch messages for each
             for (document in sessionsSnapshot.documents) {
                 // Convert document to ChatSession object
                 val session = document.toObject(ChatSession::class.java)
 
                 if (session != null) {
-                    // 3. Fetch messages subcollection for the current session
+                    // Fetch messages subcollection for the current session
                     val messagesSnapshot = document.reference.collection("messages")
                         // Ensure you are ordering the messages to display them chronologically
                         .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.ASCENDING)
                         .get()
                         .await()
 
-                    // 4. Convert messages documents to ChatMessage objects and add to the session's list
+                    // Convert messages documents to ChatMessage objects and add to the session's list
                     val messages = messagesSnapshot.documents.mapNotNull { msgDoc ->
                         msgDoc.toObject(ChatMessage::class.java)
                     }
@@ -157,7 +156,7 @@ class OpenAIService {
                             .thenBy { if (it.isUser) 0 else 1}     // Secondary: User (0) comes before AI (1)
                     )
 
-                    // IMPORTANT: Add the fetched messages to the session object
+                    // Add the fetched messages to the session object
                     session.messages.clear()
                     session.messages.addAll(sortedMessages)
 

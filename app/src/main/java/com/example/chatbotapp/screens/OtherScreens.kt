@@ -6,7 +6,9 @@ package com.example.chatbotapp.screens
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.animation.animateContentSize
-
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
+import kotlinx.coroutines.tasks.await
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -23,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.chatbotapp.auth.AuthService
 import com.example.chatbotapp.auth.UserProfile
+import android.widget.Button
 import kotlinx.coroutines.launch
 
 // Data classes for MSU courses
@@ -32,7 +35,8 @@ data class MSUCourse(
     val credits: Int,
     val prerequisites: List<String>,
     val offered: List<String>,
-    val category: String = "Core"
+    val category: String = "Core",
+    val isTaken: Boolean = false
 )
 
 @Composable
@@ -41,8 +45,64 @@ fun CurriculumContent(modifier: Modifier = Modifier,
     var selectedCategory by remember { mutableStateOf("All") }
     var searchQuery by remember { mutableStateOf("") }
     var expandedCourse by remember { mutableStateOf<String?>(null) }
+    // Loading state
+    var isLoading by remember { mutableStateOf(true) }
+    // Holds taken course codes loaded from Firestore
+    var takenCourses by remember { mutableStateOf<List<String>>(emptyList()) }
+    val coroutineScope = rememberCoroutineScope()
+    var hasDegreeworksData by remember { mutableStateOf(false) }
 
-    val categories = listOf("All", "Math", "Core CS", "Advanced", "Electives", "Capstone")
+
+    val categories = listOf("All", "Math", "Core CS", "Advanced", "Electives", "Capstone","Taken")
+
+    // Fetch taken courses from Firestore once
+    LaunchedEffect(Unit) {
+        coroutineScope.launch {
+            try {
+                val userId = FirebaseAuth.getInstance().currentUser?.uid
+                if (userId != null) {
+                    val snapshot = FirebaseFirestore.getInstance()
+                        .collection("users")
+                        .document(userId)
+                        .collection("degreeworks")
+                        .document("latest")
+                        .get()
+                        .await()
+
+                    if (snapshot.exists() && snapshot.data?.isNotEmpty() == true) {
+                        hasDegreeworksData = true
+                        val sections = snapshot.get("sections") as? List<Map<String, Any>>
+                        val completed = mutableListOf<String>()
+                        //sort taken classes from firestore
+                        sections?.forEach { section ->
+                            val completedCourses =
+                                section["completed_courses"] as? List<Map<String, Any>>
+                            completedCourses?.forEach { course ->
+                                val code = (course["course"] as? String)?.trim()
+                                val termText = (course["term"] as? String)?.trim().orEmpty()
+
+                                // Always add the main course code if available
+                                if (!code.isNullOrEmpty()) completed.add(code)
+
+                                // Also extract any hidden courses like COSC 112, COSC 220, etc.
+                                val embeddedCourses = Regex("""\b[A-Z]{2,4}\s?\d{3}\b""")
+                                    .findAll(termText)
+                                    .map { it.value.trim() }
+                                    .toList()
+
+                                completed.addAll(embeddedCourses)
+                            }
+                        }
+                        takenCourses = completed
+                    } }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                isLoading = false
+            }
+        }
+    }
+
 
     val msuCourses = remember {
         listOf(
@@ -80,13 +140,33 @@ fun CurriculumContent(modifier: Modifier = Modifier,
             MSUCourse("COSC 001", "CS Senior Comprehensive Exam", 0, emptyList(), listOf("As Needed"), "Capstone")
         )
     }
+    // Update courses with taken status from Firestore
+    val displayedCourses = msuCourses.map { course ->
+        course.copy(
+            isTaken = takenCourses.any { it.contains(course.courseCode, ignoreCase = true) }
+        )
+    }
 
-    val filteredCourses = msuCourses.filter { course ->
-        val matchesCategory = selectedCategory == "All" || course.category == selectedCategory
+    val filteredCourses = displayedCourses.filter { course ->
+        val matchesCategory = when (selectedCategory) {
+            "All" -> true
+            "Taken" -> course.isTaken
+            else -> course.category == selectedCategory
+        }
         val matchesSearch = searchQuery.isEmpty() ||
                 course.courseCode.contains(searchQuery, ignoreCase = true) ||
                 course.courseName.contains(searchQuery, ignoreCase = true)
         matchesCategory && matchesSearch
+    }
+    // Loading overlay
+    if (isLoading) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator()
+        }
+        return
     }
 
     Column(
@@ -157,46 +237,63 @@ fun CurriculumContent(modifier: Modifier = Modifier,
         }
 
         Spacer(modifier = Modifier.height(16.dp))
-        // Degreeworks Gateway Button (Place this after the category filter, before the list)
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Button(
-                onClick = {
-                    val url = "https://morgan.edu/gateway"
-                    onLaunchBrowser(url)
-                },
-                modifier = Modifier.fillMaxWidth(0.95f) // Slightly narrower than full width for padding
+        // Degreeworks button (Only shows if no degreeworks info is found)
+        if (!hasDegreeworksData) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Icon(Icons.Filled.Public, contentDescription = "Launch Degreeworks Gateway")
-                Spacer(Modifier.width(8.dp))
-                Text("Access Degreeworks Gateway")
-            }
+                Button(
+                    onClick = {
+                        val url = "https://morgan.edu/gateway"
+                        onLaunchBrowser(url)
+                    },
+                    modifier = Modifier.fillMaxWidth(0.95f)
+                ) {
+                    Icon(Icons.Filled.Public, contentDescription = "Launch Degreeworks Gateway")
+                    Spacer(Modifier.width(8.dp))
+                    Text("Access Degreeworks Gateway")
+                }
 
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "Sign in, navigate to your Degreeworks page.",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(16.dp)) // Space before course list starts
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Sign in, navigate to your Degreeworks page.",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+            }
         }
 
 
         // Course list
-        LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            state = rememberLazyListState()
-        ) {
-            items(filteredCourses) { course ->
-                MSUCourseCard(
-                    course = course,
-                    isExpanded = expandedCourse == course.courseCode,
-                    onToggleExpand = {
-                        expandedCourse = if (expandedCourse == course.courseCode) null else course.courseCode
-                    }
+        if (selectedCategory == "Taken" && filteredCourses.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(top = 40.dp),
+                contentAlignment = Alignment.TopCenter
+            ) {
+                Text(
+                    text = "No classes taken yet or DegreeWorks not uploaded.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+        } else {
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                state = rememberLazyListState()
+            ) {
+                items(filteredCourses) { course ->
+                    MSUCourseCard(
+                        course = course,
+                        isExpanded = expandedCourse == course.courseCode,
+                        onToggleExpand = {
+                            expandedCourse = if (expandedCourse == course.courseCode) null else course.courseCode
+                        }
+                    )
+                }
             }
         }
     }
@@ -353,6 +450,7 @@ private fun getCategoryColor(category: String): androidx.compose.ui.graphics.Col
 @Composable
 fun ProfileContent(
     modifier: Modifier = Modifier,
+    onEditProfile: () -> Unit = {},
     onLogout: () -> Unit = {}
 ) {
     var userProfile by remember { mutableStateOf<UserProfile?>(null) }
@@ -460,7 +558,10 @@ fun ProfileContent(
                     SettingsCard(
                         title = settingsItem.title,
                         icon = settingsItem.icon,
-                        onClick = {
+                        onClick = { when (settingsItem.title) {
+                            "Edit Profile" -> {onEditProfile()}
+                        }
+
                             // Handle settings item clicks
                         }
                     )

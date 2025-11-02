@@ -77,7 +77,7 @@ fun EditableChatTitle(
         }
     } else {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            // 1. Display Current Title
+            //Display Current Title
             Text(
                 text = chatSession.title,
                 style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
@@ -85,7 +85,6 @@ fun EditableChatTitle(
             )
 
             // 2. Edit Button
-            // The button only appears if the title is NOT the default "New Chat"
 
                 IconButton(onClick = { isEditing = true }) {
                     Icon(
@@ -117,13 +116,13 @@ fun ChatContent(
     // When a new voice input string arrives, update the userInput field and signal MainActivity to clear the result
     LaunchedEffect(voiceInput) {
         if (voiceInput != null) {
-            // 1. Set the user input field to the recognized speech (overwrites current text)
+            // Set the user input field to the recognized speech (overwrites current text)
             userInput = voiceInput.trim()
 
-            // 2. Reset listening state for the UI icon
+            // Reset listening state for the UI icon
             isListening = false
 
-            // 3. Tell the parent (MainScreen) the result has been consumed
+            //Tell the parent (MainScreen) the result has been consumed
             onVoiceInputComplete()
 
         }
@@ -283,7 +282,7 @@ fun ChatContent(
 
                     // Voice input button with better styling
                     IconButton(
-                        // 🚨 FIX: When clicked, set local listening state (for visual)
+                        // When clicked, set local listening state (for visual)
                         // and call the starter function from MainScreen.
                         onClick = {
                             isListening = true
@@ -312,27 +311,27 @@ fun ChatContent(
                                 val query = userInput
                                 userInput = ""
 
-                                // Save user message to Firebase immediately
+                                //Save user message to Firebase immediately
                                 onMessageSent()
 
 
-                                // Show typing indicator
+                                //Show typing indicator
                                 isTyping = true
 
-                                // Call OpenAI API
+                                //Call OpenAI API
                                 coroutineScope.launch {
                                     try {
                                         val response = openAIService.getChatResponse(query)
                                         isTyping = false
 
-                                        // 2. Add AI response to the local list
+                                        // Add AI response to the local list
                                         chatSession.messages.add(ChatMessage(
                                             text = response,
                                             isUser = false
                                         ))
 
-                                        // 3. Save *both* messages to Firebase AT ONCE
-                                        onMessageSent() // <-- FINAL, SINGLE SAVE
+                                        // Save *both* messages to Firebase AT ONCE
+                                        onMessageSent()
 
                                     } catch (e: Exception) {
                                         isTyping = false

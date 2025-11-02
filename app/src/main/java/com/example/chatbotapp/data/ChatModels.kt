@@ -22,7 +22,6 @@ data class ChatSession(
     var title: String= "New Chat",
     val messages: MutableList<ChatMessage> = mutableListOf(),
     val createdAt: String = getCurrentTime(),
-    //val lastUpdated: String = getCurrentTime(),
     @ServerTimestamp
     var lastUpdatedTimestamp: Timestamp? = null)
 
