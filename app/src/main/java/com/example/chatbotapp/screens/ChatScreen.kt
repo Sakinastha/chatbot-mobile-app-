@@ -1,368 +1,1094 @@
+// File: app/src/main/java/com/example/chatbotapp/screens/ChatScreen.kt
 @file:OptIn(ExperimentalMaterial3Api::class)
 
 package com.example.chatbotapp.screens
 
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.chatbotapp.data.ChatMessage
 import com.example.chatbotapp.data.ChatSession
 import com.example.chatbotapp.data.updateChatTitle
-import com.example.chatbotapp.components.SmartChatBubble
-import com.example.chatbotapp.components.TypingIndicator
 import com.example.chatbotapp.api.OpenAIService
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.runtime.saveable.rememberSaveable
+import com.example.chatbotapp.R
+import android.util.Log
 
-// Add the new EditableChatTitle Composable
-@Composable
-fun EditableChatTitle(
-    chatSession: ChatSession,
-    onTitleChanged: (String) -> Unit
-) {
-    // State to manage whether the title is in edit mode
-    var isEditing by remember { mutableStateOf(false) }
+// Dark theme colors
+private val ChatDarkBg = Color(0xFF1E1E2E)
+private val ChatCardBg = Color(0xFF2A2A3E)
+private val AccentGlow = Color(0xFF3A3A5E)
 
-    // State to hold the temporary text while editing
-    var newTitle by rememberSaveable { mutableStateOf(chatSession.title) }
-
-    // Logic to reset the title when the chatSession changes
-    LaunchedEffect(chatSession.id) {
-        newTitle = chatSession.title
-    }
-
-    if (isEditing) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            // 1. Text Field for editing
-            OutlinedTextField(
-                value = newTitle,
-                onValueChange = { newTitle = it },
-                label = { Text("Edit Title") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions.Default.copy(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = {
-                    // Save action on 'Done' button press
-                    onTitleChanged(newTitle)
-                    isEditing = false
-                }),
-                modifier = Modifier.weight(1f)
-            )
-
-            // 2. Save Button
-            IconButton(
-                onClick = {
-                    onTitleChanged(newTitle)
-                    isEditing = false
-                },
-                enabled = newTitle.isNotBlank()
-            ) {
-                Icon(
-                    Icons.Filled.Check,
-                    contentDescription = "Save Title",
-                    tint = MaterialTheme.colorScheme.primary
-                )
-            }
-        }
-    } else {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            //Display Current Title
-            Text(
-                text = chatSession.title,
-                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
-                modifier = Modifier.padding(end = 8.dp) // Space before the button
-            )
-
-            // 2. Edit Button
-
-                IconButton(onClick = { isEditing = true }) {
-                    Icon(
-                        Icons.Filled.Edit,
-                        contentDescription = "Edit Chat Title",
-                        modifier = Modifier.size(20.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-        }
-    }
-}
 @Composable
 fun ChatContent(
     modifier: Modifier = Modifier,
     chatSession: ChatSession,
     onNewChat: () -> Unit,
     onMessageSent: () -> Unit = {},
-    onTitleChanged: (String) -> Unit,
-    onMicClicked: () -> Unit,
-    voiceInput: String?,
-    onVoiceInputComplete: () -> Unit
-)
-{
-    var userInput by remember { mutableStateOf("") }
-    var isListening by remember { mutableStateOf(false) }
+    chatSessions: List<ChatSession> = emptyList(),
+    currentChatId: String = "",
+    onChatSelected: (String) -> Unit = {},
+    onChatDeleted: (String) -> Unit = {}
+) {
+    var userInput by remember { mutableStateOf(TextFieldValue("")) }
     var isTyping by remember { mutableStateOf(false) }
-    // When a new voice input string arrives, update the userInput field and signal MainActivity to clear the result
-    LaunchedEffect(voiceInput) {
-        if (voiceInput != null) {
-            // Set the user input field to the recognized speech (overwrites current text)
-            userInput = voiceInput.trim()
-
-            // Reset listening state for the UI icon
-            isListening = false
-
-            //Tell the parent (MainScreen) the result has been consumed
-            onVoiceInputComplete()
-
-        }
-    }
-
-    // Create OpenAI service instance
+    var showHistoryDrawer by remember { mutableStateOf(false) }
     val openAIService = remember { OpenAIService() }
     val coroutineScope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
 
+    val suggestedPrompts = remember {
+        listOf(
+            "📚 What courses should I take next semester?",
+            "🗓️ Show me the academic calendar",
+            "💡 Give me study tips for finals",
+            "🎯 Career advice for CS majors",
+            "🏫 Campus facilities and resources",
+            "📝 How to register for classes?"
+        )
+    }
 
-    Column(
-        modifier = modifier.fillMaxSize()
+    val backgroundBrush = Brush.verticalGradient(
+        colors = listOf(
+            ChatDarkBg,
+            MorganBlue.copy(alpha = 0.4f),
+            ChatDarkBg,
+            MorganBlue.copy(alpha = 0.2f)
+        )
+    )
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(backgroundBrush)
     ) {
-        // Professional chat header - similar to ChatGPT
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            tonalElevation = 1.dp,
-            color = MaterialTheme.colorScheme.surface
+        Column(
+            modifier = Modifier.fillMaxSize()
         ) {
-            Row(
+            PremiumTopBar(
+                chatSession = chatSession,
+                onNewChat = onNewChat,
+                onHistoryClick = { showHistoryDrawer = true }
+            )
+
+            Box(
                 modifier = Modifier
+                    .weight(1f)
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
             ) {
-                // Chat title with professional styling
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    reverseLayout = false
                 ) {
-                    Surface(
-                        modifier = Modifier.size(32.dp),
-                        shape = androidx.compose.foundation.shape.CircleShape,
-                        color = MaterialTheme.colorScheme.primaryContainer
-                    ) {
-                        Icon(
-                            Icons.Filled.SmartToy,
-                            contentDescription = "AI Assistant",
-                            modifier = Modifier.padding(6.dp),
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
+                    if (chatSession.messages.isEmpty()) {
+                        item { EpicWelcomeCard() }
 
-                        // The EditableChatTitle Composable is placed here
-                        EditableChatTitle(chatSession, onTitleChanged)
+                        item {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "✨ Quick Actions",
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = MorganOrange
+                                    )
+                                )
+                                Text(
+                                    text = "Tap to ask",
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = LightText.copy(alpha = 0.6f)
+                                    )
+                                )
+                            }
+                        }
 
-                        Text(
-                            text = "${chatSession.messages.size} messages",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
-                // Compact new chat button
-                OutlinedButton(
-                    onClick = onNewChat,
-                    modifier = Modifier.height(36.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp)
-                ) {
-                    Icon(
-                        Icons.Filled.Add,
-                        contentDescription = "New Chat",
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        "New",
-                        style = MaterialTheme.typography.labelMedium
-                    )
-                }
-            }
-        }
-
-        // Chat messages area with proper spacing
-        LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            reverseLayout = true,
-            contentPadding = PaddingValues(vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            if (isTyping) {
-                item {
-                    TypingIndicator()
-                }
-            }
-
-            items(chatSession.messages.reversed()) { message ->
-                SmartChatBubble(message)
-            }
-        }
-
-        // Professional input area - similar to ChatGPT
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            tonalElevation = 8.dp,
-            shadowElevation = 4.dp
-        ) {
-            Column {
-                if (isTyping) {
-                    LinearProgressIndicator(
-                        modifier = Modifier.fillMaxWidth(),
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-
-                // Input row with better spacing and styling
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.Bottom
-                ) {
-                    // Attachment button with professional styling
-                    IconButton(
-                        onClick = {
-                            chatSession.messages.add(ChatMessage("📎 File attached", true, hasAttachment = true))
-                            updateChatTitle(chatSession, "📎 File attached")
-                            onMessageSent() // Save to Firebase after attachment
-                        },
-                        modifier = Modifier.size(40.dp)
-                    ) {
-                        Icon(
-                            Icons.Filled.AttachFile,
-                            contentDescription = "Attach file",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-
-                    // Professional text input field
-                    OutlinedTextField(
-                        value = userInput,
-                        onValueChange = { userInput = it },
-                        modifier = Modifier.weight(1f),
-                        placeholder = {
-                            Text(
-                                "Message AI Assistant...",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        },
-                        shape = MaterialTheme.shapes.extraLarge,
-                        maxLines = 4,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = MaterialTheme.colorScheme.primary,
-                            unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
-                        )
-                    )
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    // Voice input button with better styling
-                    IconButton(
-                        // When clicked, set local listening state (for visual)
-                        // and call the starter function from MainScreen.
-                        onClick = {
-                            isListening = true
-                            onMicClicked()
-                        },
-                        modifier = Modifier.size(40.dp)
-                    ) {
-                        Icon(
-                            // Use isListening to change the icon/tint, giving the user feedback
-                            if (isListening) Icons.Filled.MicOff else Icons.Filled.Mic,
-                            contentDescription = if (isListening) "Stop listening" else "Start voice input",
-                            tint = if (isListening)
-                                MaterialTheme.colorScheme.primary // Use primary to signal active state
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-
-                    // Professional send button
-                    FloatingActionButton(
-                        onClick = {
-                            if (userInput.isNotBlank()) {
-                                // Add user message
-                                chatSession.messages.add(ChatMessage(userInput, true))
-                                updateChatTitle(chatSession, userInput)
-                                val query = userInput
-                                userInput = ""
-
-                                //Save user message to Firebase immediately
-                                onMessageSent()
-
-
-                                //Show typing indicator
-                                isTyping = true
-
-                                //Call OpenAI API
-                                coroutineScope.launch {
-                                    try {
-                                        val response = openAIService.getChatResponse(query)
-                                        isTyping = false
-
-                                        // Add AI response to the local list
-                                        chatSession.messages.add(ChatMessage(
-                                            text = response,
-                                            isUser = false
-                                        ))
-
-                                        // Save *both* messages to Firebase AT ONCE
-                                        onMessageSent()
-
-                                    } catch (e: Exception) {
-                                        isTyping = false
-                                        chatSession.messages.add(ChatMessage(
-                                            text = "Sorry, I encountered an error. Please try again.",
-                                            isUser = false
-                                        ))
-                                        // Save error message to Firebase
-                                        onMessageSent()
+                        item {
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                suggestedPrompts.chunked(2).forEach { rowPrompts ->
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        rowPrompts.forEach { prompt ->
+                                            SuggestedPromptCard(
+                                                text = prompt,
+                                                onClick = {
+                                                    userInput = TextFieldValue(prompt.substringAfter(" ").trim())
+                                                },
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                        if (rowPrompts.size == 1) {
+                                            Spacer(modifier = Modifier.weight(1f))
+                                        }
                                     }
                                 }
                             }
-                        },
-                        modifier = Modifier.size(48.dp),
-                        containerColor = if (userInput.isBlank())
-                            MaterialTheme.colorScheme.surfaceVariant
-                        else MaterialTheme.colorScheme.primary,
-                        elevation = FloatingActionButtonDefaults.elevation(
-                            defaultElevation = if (userInput.isBlank()) 0.dp else 6.dp
+                        }
+
+                        item {
+                            Spacer(modifier = Modifier.height(24.dp))
+                            FeatureHighlights()
+                        }
+                    }
+
+                    items(
+                        items = chatSession.messages,
+                        key = { message -> "${message.timestamp}-${message.isUser}-${message.text.take(50).hashCode()}" }
+                    ) { message ->
+                        DarkMessageBubble(message)
+                    }
+
+                    if (isTyping) {
+                        item {
+                            DarkTypingIndicator()
+                        }
+                    }
+                }
+            }
+
+            PremiumInputArea(
+                userInput = userInput,
+                onInputChange = { userInput = it },
+                isTyping = isTyping,
+                onSendMessage = {
+                    if (userInput.text.isNotBlank()) {
+                        val query = userInput.text
+                        chatSession.messages.add(
+                            ChatMessage(
+                                text = query,
+                                isUser = true,
+                                timestamp = System.currentTimeMillis().toString()
+                            )
                         )
+                        updateChatTitle(chatSession, query)
+                        userInput = TextFieldValue("")
+                        onMessageSent()
+                        isTyping = true
+
+                        coroutineScope.launch {
+                            delay(100)
+                            listState.animateScrollToItem(chatSession.messages.size)
+
+                            try {
+                                val response = openAIService.getChatResponse(query)
+
+                                isTyping = false
+                                chatSession.messages.add(
+                                    ChatMessage(
+                                        text = response,
+                                        isUser = false,
+                                        timestamp = System.currentTimeMillis().toString()
+                                    )
+                                )
+                                onMessageSent()
+                                delay(100)
+                                listState.animateScrollToItem(chatSession.messages.size)
+
+                            } catch (e: Exception) {
+                                isTyping = false
+                                Log.e("ChatContent", "Error getting response: ${e.message}", e)
+
+                                val fallbackResponse = when {
+                                    e.message?.contains("API key", ignoreCase = true) == true ->
+                                        "⚠️ API key error. Please check your OpenAI configuration."
+                                    e.message?.contains("network", ignoreCase = true) == true ->
+                                        "🌐 Network error. Please check your internet connection."
+                                    else ->
+                                        "Sorry, I encountered an error: ${e.message}. Please try again."
+                                }
+
+                                chatSession.messages.add(
+                                    ChatMessage(
+                                        text = fallbackResponse,
+                                        isUser = false,
+                                        timestamp = System.currentTimeMillis().toString()
+                                    )
+                                )
+                                onMessageSent()
+                            }
+                        }
+                    }
+                }
+            )
+        }
+
+        if (showHistoryDrawer) {
+            ChatHistoryDrawer(
+                chatSessions = chatSessions,
+                currentChatId = currentChatId,
+                onDismiss = { showHistoryDrawer = false },
+                onChatSelected = { chatId ->
+                    onChatSelected(chatId)
+                    showHistoryDrawer = false
+                },
+                onChatDeleted = { chatId ->
+                    onChatDeleted(chatId)
+                }
+            )
+        }
+    }
+}
+
+@Composable
+fun PremiumTopBar(
+    chatSession: ChatSession,
+    onNewChat: () -> Unit,
+    onHistoryClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = ChatCardBg.copy(alpha = 0.95f),
+        shadowElevation = 8.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(Color.White)
+                        .border(2.dp, MorganOrange.copy(alpha = 0.5f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.chat_logo),
+                        contentDescription = "MSU",
+                        modifier = Modifier
+                            .size(32.dp)
+                            .padding(4.dp),
+                        tint = Color.Unspecified
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                Column {
+                    Text(
+                        text = "MSU AI Assistant",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.ExtraBold,
+                            color = LightText
+                        )
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            Icons.Filled.Send,
-                            contentDescription = "Send message",
-                            tint = if (userInput.isBlank())
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            else MaterialTheme.colorScheme.onPrimary,
-                            modifier = Modifier.size(20.dp)
+                        PulsingDot()
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Online • AI Powered",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = LightText.copy(alpha = 0.7f)
                         )
                     }
                 }
+            }
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                AnimatedActionButton(
+                    icon = Icons.Filled.History,
+                    contentDescription = "History",
+                    onClick = onHistoryClick
+                )
+
+                AnimatedActionButton(
+                    icon = Icons.Filled.Add,
+                    contentDescription = "New Chat",
+                    onClick = onNewChat,
+                    isPrimary = true
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun AnimatedActionButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    isPrimary: Boolean = false
+) {
+    var pressed by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.9f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy)
+    )
+
+    IconButton(
+        onClick = {
+            pressed = true
+            onClick()
+        },
+        modifier = Modifier
+            .size(40.dp)
+            .scale(scale)
+            .clip(CircleShape)
+            .background(if (isPrimary) MorganOrange else AccentGlow)
+    ) {
+        Icon(
+            icon,
+            contentDescription = contentDescription,
+            tint = if (isPrimary) Color.White else MorganOrange,
+            modifier = Modifier.size(20.dp)
+        )
+    }
+
+    LaunchedEffect(pressed) {
+        if (pressed) {
+            delay(100)
+            pressed = false
+        }
+    }
+}
+
+@Composable
+fun PulsingDot() {
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val scale by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.3f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1000),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulse"
+    )
+
+    Box(
+        modifier = Modifier
+            .size(8.dp)
+            .scale(scale)
+            .clip(CircleShape)
+            .background(Color(0xFF4CAF50))
+    )
+}
+
+@Composable
+fun EpicWelcomeCard() {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = ChatCardBg.copy(alpha = 0.8f)
+        ),
+        shape = RoundedCornerShape(24.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+    ) {
+        Box(modifier = Modifier.fillMaxWidth()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(200.dp)
+                    .background(
+                        Brush.radialGradient(
+                            colors = listOf(
+                                MorganOrange.copy(alpha = 0.2f),
+                                Color.Transparent
+                            ),
+                            radius = 400f
+                        )
+                    )
+            )
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(28.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(80.dp)
+                        .clip(CircleShape)
+                        .background(Color.White),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.chat_logo),
+                        contentDescription = "Welcome",
+                        modifier = Modifier.size(48.dp),
+                        tint = Color.Unspecified
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Text(
+                    text = "Welcome Bear! 🐻",
+                    style = MaterialTheme.typography.headlineMedium.copy(
+                        fontWeight = FontWeight.ExtraBold,
+                        color = LightText,
+                        fontSize = 28.sp
+                    ),
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "Your AI-powered assistant for all things Morgan State",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = LightText.copy(alpha = 0.8f),
+                    textAlign = TextAlign.Center,
+                    lineHeight = 22.sp
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    StatChip("🎓", "Courses")
+                    StatChip("📅", "Events")
+                    StatChip("💡", "Tips")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun FeatureHighlights() {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            text = "🚀 What I can help with",
+            style = MaterialTheme.typography.titleMedium.copy(
+                fontWeight = FontWeight.Bold,
+                color = LightText
+            )
+        )
+
+        FeatureItem("📚", "Course Information", "Prerequisites, schedules, and more")
+        FeatureItem("🗓️", "Academic Calendar", "Important dates and deadlines")
+        FeatureItem("💡", "Study Resources", "Tips, tools, and guidance")
+        FeatureItem("🏛️", "Campus Life", "Facilities, events, and activities")
+    }
+}
+
+@Composable
+fun FeatureItem(emoji: String, title: String, description: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = ChatCardBg.copy(alpha = 0.5f),
+        border = BorderStroke(1.dp, AccentGlow)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                emoji,
+                style = MaterialTheme.typography.headlineMedium,
+                modifier = Modifier.size(40.dp)
+            )
+            Spacer(modifier = Modifier.width(16.dp))
+            Column {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = LightText
+                    )
+                )
+                Text(
+                    description,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = LightText.copy(alpha = 0.7f)
+                    )
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun StatChip(emoji: String, label: String) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = AccentGlow.copy(alpha = 0.5f),
+        border = BorderStroke(1.dp, MorganOrange.copy(alpha = 0.3f))
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(emoji, fontSize = 16.sp)
+            Text(
+                label,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    color = LightText,
+                    fontWeight = FontWeight.Medium
+                )
+            )
+        }
+    }
+}
+
+@Composable
+fun SuggestedPromptCard(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var pressed by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.95f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy)
+    )
+
+    Surface(
+        onClick = {
+            pressed = true
+            onClick()
+        },
+        modifier = modifier
+            .height(90.dp)
+            .scale(scale),
+        shape = RoundedCornerShape(16.dp),
+        color = ChatCardBg.copy(alpha = 0.6f),
+        border = BorderStroke(1.dp, MorganOrange.copy(alpha = 0.2f)),
+        shadowElevation = 4.dp
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(12.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    color = LightText,
+                    fontWeight = FontWeight.Medium,
+                    lineHeight = 20.sp
+                )
+            )
+        }
+    }
+
+    LaunchedEffect(pressed) {
+        if (pressed) {
+            delay(100)
+            pressed = false
+        }
+    }
+}
+
+@Composable
+fun DarkMessageBubble(message: ChatMessage) {
+    var visible by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        delay(50)
+        visible = true
+    }
+
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(animationSpec = tween(400)) +
+                slideInVertically(
+                    initialOffsetY = { 40 },
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                        stiffness = Spring.StiffnessLow
+                    )
+                ) +
+                scaleIn(
+                    initialScale = 0.9f,
+                    animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy)
+                )
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = if (message.isUser) Arrangement.End else Arrangement.Start
+        ) {
+            if (!message.isUser) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(Color.White),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.chat_logo),
+                        contentDescription = "AI",
+                        modifier = Modifier.size(20.dp),
+                        tint = Color.Unspecified
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+            }
+
+            Surface(
+                modifier = Modifier.widthIn(max = 280.dp),
+                shape = RoundedCornerShape(
+                    topStart = 20.dp,
+                    topEnd = 20.dp,
+                    bottomStart = if (message.isUser) 20.dp else 4.dp,
+                    bottomEnd = if (message.isUser) 4.dp else 20.dp
+                ),
+                color = if (message.isUser) MorganOrange else ChatCardBg.copy(alpha = 0.9f),
+                shadowElevation = 6.dp,
+                border = if (!message.isUser) BorderStroke(1.dp, AccentGlow) else null
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    ClickableMessageText(
+                        text = message.text,
+                        isUser = message.isUser
+                    )
+                }
+            }
+
+            if (message.isUser) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(AccentGlow),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Filled.Person,
+                        contentDescription = "You",
+                        modifier = Modifier.size(20.dp),
+                        tint = LightText
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ClickableMessageText(
+    text: String,
+    isUser: Boolean
+) {
+    val uriHandler = LocalUriHandler.current
+
+    val urlPattern = Regex("https?://[^\\s]+")
+    val matches = urlPattern.findAll(text).toList()
+
+    if (matches.isEmpty()) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyLarge.copy(
+                color = if (isUser) Color.White else LightText,
+                lineHeight = 22.sp
+            )
+        )
+    } else {
+        val annotatedString = buildAnnotatedString {
+            var lastIndex = 0
+
+            matches.forEach { match ->
+                append(text.substring(lastIndex, match.range.first))
+
+                val url = match.value
+                val displayText = extractDisplayName(url)
+
+                pushStringAnnotation(tag = "URL", annotation = url)
+                withStyle(
+                    style = SpanStyle(
+                        color = if (isUser) Color.White else Color(0xFF4A9EFF),
+                        textDecoration = TextDecoration.Underline,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                ) {
+                    append(displayText)
+                }
+                pop()
+
+                lastIndex = match.range.last + 1
+            }
+
+            if (lastIndex < text.length) {
+                append(text.substring(lastIndex))
+            }
+        }
+
+        ClickableText(
+            text = annotatedString,
+            style = MaterialTheme.typography.bodyLarge.copy(
+                color = if (isUser) Color.White else LightText,
+                lineHeight = 22.sp
+            ),
+            onClick = { offset ->
+                annotatedString.getStringAnnotations(tag = "URL", start = offset, end = offset)
+                    .firstOrNull()?.let { annotation ->
+                        try {
+                            uriHandler.openUri(annotation.item)
+                        } catch (e: Exception) {
+                            Log.e("ClickableText", "Failed to open URL: ${e.message}")
+                        }
+                    }
+            }
+        )
+    }
+}
+
+fun extractDisplayName(url: String): String {
+    return when {
+        url.contains("morgan.edu/calendar") -> "📅 Morgan State Calendar"
+        url.contains("morgan.edu/registrar") -> "📝 Registrar"
+        url.contains("morgan.edu/admissions") -> "🎓 Admissions"
+        url.contains("morgan.edu") -> "🏛️ Morgan State Website"
+        url.contains("degreeworks") -> "🎓 DegreeWorks"
+        else -> {
+            val domain = url.substringAfter("://").substringBefore("/").substringAfter("www.")
+            "🔗 $domain"
+        }
+    }
+}
+
+@Composable
+fun DarkTypingIndicator() {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Start
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(CircleShape)
+                .background(Color.White),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                painter = painterResource(id = R.drawable.chat_logo),
+                contentDescription = "AI",
+                modifier = Modifier.size(20.dp),
+                tint = Color.Unspecified
+            )
+        }
+
+        Spacer(modifier = Modifier.width(8.dp))
+
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = ChatCardBg.copy(alpha = 0.9f),
+            shadowElevation = 4.dp
+        ) {
+            Row(
+                modifier = Modifier.padding(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                repeat(3) { index ->
+                    TypingDot(index)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun TypingDot(index: Int) {
+    val infiniteTransition = rememberInfiniteTransition(label = "typing")
+    val offset by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = -8f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(600, delayMillis = index * 100),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "dot$index"
+    )
+
+    Box(
+        modifier = Modifier
+            .size(8.dp)
+            .offset(y = offset.dp)
+            .clip(CircleShape)
+            .background(MorganOrange)
+    )
+}
+
+@Composable
+fun PremiumInputArea(
+    userInput: TextFieldValue,
+    onInputChange: (TextFieldValue) -> Unit,
+    isTyping: Boolean,
+    onSendMessage: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = ChatCardBg.copy(alpha = 0.95f),
+        shadowElevation = 16.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            IconButton(
+                onClick = { },
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(AccentGlow)
+            ) {
+                Icon(
+                    Icons.Filled.Mic,
+                    contentDescription = "Voice",
+                    tint = MorganOrange
+                )
+            }
+
+            OutlinedTextField(
+                value = userInput,
+                onValueChange = onInputChange,
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 56.dp, max = 120.dp),
+                placeholder = {
+                    Text(
+                        "Ask me anything...",
+                        color = LightText.copy(alpha = 0.5f)
+                    )
+                },
+                shape = RoundedCornerShape(28.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = MorganOrange,
+                    unfocusedBorderColor = AccentGlow,
+                    cursorColor = MorganOrange,
+                    focusedContainerColor = ChatDarkBg.copy(alpha = 0.5f),
+                    unfocusedContainerColor = ChatDarkBg.copy(alpha = 0.3f),
+                    focusedTextColor = LightText,
+                    unfocusedTextColor = LightText
+                ),
+                enabled = !isTyping
+            )
+
+            FloatingActionButton(
+                onClick = onSendMessage,
+                modifier = Modifier.size(56.dp),
+                containerColor = if (userInput.text.isBlank() || isTyping)
+                    AccentGlow
+                else MorganOrange,
+                elevation = FloatingActionButtonDefaults.elevation(
+                    defaultElevation = if (userInput.text.isBlank()) 0.dp else 8.dp
+                )
+            ) {
+                Icon(
+                    Icons.Filled.Send,
+                    contentDescription = "Send",
+                    tint = if (userInput.text.isBlank() || isTyping)
+                        LightText.copy(alpha = 0.5f)
+                    else Color.White
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun ChatHistoryDrawer(
+    chatSessions: List<ChatSession> = emptyList(),
+    currentChatId: String = "",
+    onDismiss: () -> Unit,
+    onChatSelected: (String) -> Unit,
+    onChatDeleted: (String) -> Unit = {}
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.7f))
+            .clickable(onClick = onDismiss)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.85f)
+                .fillMaxHeight()
+                .align(Alignment.CenterStart)
+                .clickable(enabled = false) { },
+            color = ChatDarkBg,
+            shadowElevation = 16.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(20.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "📜 Chat History",
+                        style = MaterialTheme.typography.headlineSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = LightText
+                        )
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Filled.Close, "Close", tint = LightText)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                if (chatSessions.isEmpty()) {
+                    Text(
+                        "No previous chats",
+                        color = LightText.copy(alpha = 0.6f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(16.dp)
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(
+                            items = chatSessions,
+                            key = { it.id }
+                        ) { session ->
+                            ChatHistoryItem(
+                                session = session,
+                                isSelected = session.id == currentChatId,
+                                onSelect = {
+                                    onChatSelected(session.id)
+                                    onDismiss()
+                                },
+                                onDelete = {
+                                    onChatDeleted(session.id)
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ChatHistoryItem(
+    session: ChatSession,
+    isSelected: Boolean,
+    onSelect: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onSelect),
+        shape = RoundedCornerShape(12.dp),
+        color = if (isSelected) MorganOrange.copy(alpha = 0.3f) else ChatCardBg.copy(alpha = 0.6f),
+        border = if (isSelected) BorderStroke(2.dp, MorganOrange) else null
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    text = session.title,
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        color = LightText
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (session.messages.isNotEmpty()) {
+                    Text(
+                        text = "${session.messages.size} messages",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            color = LightText.copy(alpha = 0.6f)
+                        )
+                    )
+                }
+            }
+
+            IconButton(
+                onClick = onDelete,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = "Delete",
+                    tint = Color(0xFFFF6B6B),
+                    modifier = Modifier.size(20.dp)
+                )
             }
         }
     }

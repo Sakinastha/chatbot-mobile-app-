@@ -14,6 +14,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -23,6 +24,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.chatbotapp.data.ChatMessage
 import java.util.regex.Pattern
+
+import com.example.chatbotapp.R
 
 @Composable
 fun SmartChatBubble(message: ChatMessage) {
@@ -37,15 +40,17 @@ fun SmartChatBubble(message: ChatMessage) {
         if (!message.isUser) {
             // Bot avatar
             Surface(
-                modifier = Modifier.size(32.dp),
-                shape = RoundedCornerShape(16.dp),
+                // --- INCREASED SIZE HERE ---
+                modifier = Modifier.size(40.dp), // Increased size from 32.dp to 40.dp
+                shape = RoundedCornerShape(20.dp), // Adjusted shape to match new size
                 color = MaterialTheme.colorScheme.primaryContainer
             ) {
                 Icon(
-                    Icons.Filled.SmartToy,
-                    contentDescription = "AI",
-                    modifier = Modifier.padding(6.dp),
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                    painter = painterResource(id = R.drawable.chat_icon),
+                    contentDescription = "AI Assistant Avatar (Robot)",
+                    // Slightly adjusted padding for the larger icon
+                    modifier = Modifier.padding(4.dp),
+                    tint = Color.Unspecified
                 )
             }
             Spacer(modifier = Modifier.width(8.dp))

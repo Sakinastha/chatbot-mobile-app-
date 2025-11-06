@@ -86,7 +86,7 @@ class DegreeWorksActivity : ComponentActivity() {
             //********************************************
             //********************Change IP address*******
             //********************************************
-            .url("http://192.168.1.240:8000/scrape")
+            .url("http://192.168.1.161:8000/scrape")
             .post(body)
             .build()
 
