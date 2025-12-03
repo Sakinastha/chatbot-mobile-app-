@@ -1,51 +1,68 @@
 package com.example.chatbotapp.api
 
 import android.util.Log
+import com.example.chatbotapp.data.ChatMessage
+import com.example.chatbotapp.data.ChatSession
+import com.google.firebase.Timestamp
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Query
+import com.google.firebase.firestore.SetOptions
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.tasks.await
-import okhttp3.*
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 import kotlin.math.sqrt
-import com.example.chatbotapp.data.ChatSession
-import com.example.chatbotapp.data.ChatMessage
-import com.google.firebase.auth.FirebaseAuth // Import for getting the cu
-import com.google.firebase.Timestamp
-import com.google.firebase.firestore.FieldPath
 
+import com.example.chatbotapp.data.CourseEntry
+
+import com.example.chatbotapp.data.StudentProfile
 
 class OpenAIService {
 
-    private val apiKey = ""
-    private val client = OkHttpClient()
+    private val apiKey = "api key"
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .build()
+
     private val db = FirebaseFirestore.getInstance()
     private val TAG = "OpenAIService"
+
+    private val auth = FirebaseAuth.getInstance()
 
     private val contextCache = mutableMapOf<String, Pair<String, Long>>()
     private val embeddingCache = mutableMapOf<String, List<Double>>()
     private val CACHE_DURATION = 10 * 60 * 1000L
-    // Helper to get the current user ID
+
     private val currentUserId: String?
         get() = FirebaseAuth.getInstance().currentUser?.uid
+
     suspend fun scrapeAndSaveDegreeData(html: String): Boolean {
         val userId = FirebaseAuth.getInstance().currentUser?.uid ?: run {
             Log.e("Scrape", "User not authenticated. Cannot save data.")
             return false
         }
 
-        val client = OkHttpClient()
         val mediaType = "application/json; charset=utf-8".toMediaType()
-
-        // Correctly escape the HTML string for JSON payload
         val json = """{"html": ${JSONObject.quote(html)}}"""
         val body = json.toRequestBody(mediaType)
 
-        // IMPORTANT: Change this IP/Port to match your running server setup
         val request = Request.Builder()
-            .url("http://192.168.1.240:8000/scrape")
+            .url("http://192.168.1.161:8000/scrape")
             .post(body)
             .build()
 
@@ -58,14 +75,8 @@ class OpenAIService {
                 Log.i("Scrape", "Server responded successfully.")
 
                 if (responseData != null) {
-                    // Assuming the server returns a JSON structure (the scraped data)
-                    // We'll save this raw JSON string to Firestore under the user's profile.
                     val db = FirebaseFirestore.getInstance()
-
-                    // Firestore path: users/{userId}
                     val userRef = db.collection("users").document(userId)
-
-                    // Update the user's document with the scraped data
                     userRef.update("degreeAuditData", responseData).await()
                     Log.i("Scrape", "Degree audit data saved to Firestore for user $userId.")
                     true
@@ -83,88 +94,88 @@ class OpenAIService {
         }
     }
 
-
     suspend fun deleteChat(chatId: String) {
-        // This is the  Firestore deletion logic
-        FirebaseFirestore.getInstance()
-            .collection("chatSessions")
-            .document(chatId)
-            .delete()
-            .await()
-    }
-
-    // function to save/update a chat session and save a new message
-    suspend fun saveChatUpdate(chatSession: ChatSession, newMessage: ChatMessage): Boolean {
-        val userId = currentUserId ?: return false // Must have a logged-in user
-
-        return try {
-            //  Get the reference to the specific chat document
-            val chatRef = db.collection("users").document(userId)
-                .collection("chats").document(chatSession.id)
-
-            // Update the ChatSession document (mostly to update the ServerTimestamp)
-            val sessionUpdates = mapOf(
-                "title" to chatSession.title,
-                // ServerTimestamp will be updated automatically due to @ServerTimestamp in ChatSession
-                "lastUpdatedTimestamp" to com.google.firebase.Timestamp.now()
-            )
-            chatRef.set(sessionUpdates, com.google.firebase.firestore.SetOptions.merge()).await()
-
-            // Add the new message to the 'messages' subcollection
-            chatRef.collection("messages").add(newMessage).await()
-
-            Log.d(TAG, "Chat session and message saved successfully.")
-            true
+        try {
+            FirebaseFirestore.getInstance()
+                .collection("chatSessions")
+                .document(chatId)
+                .delete()
+                .await()
+            Log.d(TAG, "Chat deleted: $chatId")
         } catch (e: Exception) {
-            Log.e(TAG, "Error saving chat update: ${e.message}")
-            false
+            Log.e(TAG, "Error deleting chat: ${e.message}")
         }
     }
 
-    // function to fetch a user's chat sessions
+    suspend fun saveChatUpdate(session: ChatSession, message: ChatMessage) {
+        withContext(Dispatchers.IO) {
+            try {
+                val userId = auth.currentUser?.uid ?: return@withContext
+
+                // Add small delay to prevent conflicts
+                delay(100)
+
+                db.collection("users")
+                    .document(userId)
+                    .collection("chats")
+                    .document(session.id)
+                    .set(session, SetOptions.merge())
+                    .await()
+
+                Log.d("OpenAIService", "Chat saved successfully")
+            } catch (e: Exception) {
+                Log.e("OpenAIService", "Error saving chat: ${e.message}")
+                // Retry once after delay
+                delay(500)
+                try {
+                    val userId = auth.currentUser?.uid ?: return@withContext
+                    db.collection("users")
+                        .document(userId)
+                        .collection("chats")
+                        .document(session.id)
+                        .set(session, SetOptions.merge())
+                        .await()
+                } catch (retryError: Exception) {
+                    Log.e("OpenAIService", "Retry failed: ${retryError.message}")
+                }
+            }
+        }
+    }
+
     suspend fun fetchChatSessions(): List<ChatSession> {
         val userId = currentUserId ?: return emptyList()
-        val fetchedSessions = mutableListOf<ChatSession>() // 👈 1. Use a mutable list to build the result
+        val fetchedSessions = mutableListOf<ChatSession>()
 
         return try {
-            //  Fetch all ChatSession documents (title, metadata)
             val sessionsSnapshot = db.collection("users").document(userId)
                 .collection("chats")
-                .orderBy("lastUpdatedTimestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
+                .orderBy("lastUpdatedTimestamp", Query.Direction.DESCENDING)
                 .get()
                 .await()
 
-            // Iterate through documents and fetch messages for each
             for (document in sessionsSnapshot.documents) {
-                // Convert document to ChatSession object
                 val session = document.toObject(ChatSession::class.java)
 
                 if (session != null) {
-                    // Fetch messages subcollection for the current session
                     val messagesSnapshot = document.reference.collection("messages")
-                        // Ensure you are ordering the messages to display them chronologically
-                        .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.ASCENDING)
+                        .orderBy("timestamp", Query.Direction.ASCENDING)
                         .get()
                         .await()
 
-                    // Convert messages documents to ChatMessage objects and add to the session's list
                     val messages = messagesSnapshot.documents.mapNotNull { msgDoc ->
                         msgDoc.toObject(ChatMessage::class.java)
                     }
                     val sortedMessages = messages.sortedWith(
-                        compareBy<ChatMessage> { it.timestamp } // Primary: Sort by timestamp ascending
-                            .thenBy { if (it.isUser) 0 else 1}     // Secondary: User (0) comes before AI (1)
+                        compareBy<ChatMessage> { it.timestamp }
+                            .thenBy { if (it.isUser) 0 else 1 }
                     )
 
-                    // Add the fetched messages to the session object
                     session.messages.clear()
                     session.messages.addAll(sortedMessages)
-
                     fetchedSessions.add(session)
                 }
             }
 
-            // Return the list you built outside the loop
             fetchedSessions
 
         } catch (e: Exception) {
@@ -173,12 +184,10 @@ class OpenAIService {
         }
     }
 
-
-    // Query intent types
     private enum class QueryIntent {
-        ROLE_QUERY,      // "who is the chair"
-        PERSON_QUERY,    // "who is Dr. Paul Wang"
-        GENERAL_QUERY    // "what are the office hours"
+        ROLE_QUERY,
+        PERSON_QUERY,
+        GENERAL_QUERY
     }
 
     private data class QueryAnalysis(
@@ -194,7 +203,6 @@ class OpenAIService {
             msg in listOf("hi", "hello", "hey", "greetings", "howdy", "yo") ->
                 "Hello! I'm your Morgan State University AI assistant. How can I help you?"
 
-
             msg.contains("good morning") || msg in listOf("morning", "gm") ->
                 "Good morning! I hope you have a wonderful day ahead. How can I assist you with Morgan State University today?"
 
@@ -207,13 +215,11 @@ class OpenAIService {
             msg.contains("good night") || msg in listOf("goodnight", "night") ->
                 "Good night! If you need anything else, feel free to reach out anytime. Sleep well!"
 
-
             msg.contains("how are you") || msg.contains("how r u") || msg.contains("how are u") ->
                 "I'm doing great! Thank you for asking. How can I help you with Morgan State University?"
 
             msg.contains("how's it going") || msg.contains("how is it going") || msg == "sup" || msg == "wassup" ->
                 "Everything's going well! How can I assist you today?"
-
 
             msg in listOf("bye", "goodbye", "bye bye", "see you", "see ya", "later", "catch you later", "take care") ->
                 "Goodbye! Come back anytime you need help. Take care!"
@@ -224,13 +230,11 @@ class OpenAIService {
             msg.contains("have a good night") || msg.contains("have a great night") ->
                 "Thank you! Have a great night! Reach out anytime you need assistance."
 
-
             msg in listOf("thanks", "thank you", "thx", "ty", "tysm", "thank u", "appreciate it") ->
                 "You're welcome! I'm always here to help if you need anything else."
 
             msg.contains("thanks a lot") || msg.contains("thank you so much") ->
                 "You're very welcome! Happy to help anytime."
-
 
             msg.contains("nice to meet you") || msg.contains("pleased to meet you") ->
                 "Nice to meet you too! I'm here to help you with any questions about Morgan State University."
@@ -244,13 +248,11 @@ class OpenAIService {
             msg in listOf("no", "nope", "nah", "not really") ->
                 "No problem! If you change your mind or need anything, I'm here to help."
 
-
             msg.contains("i need help") || msg.contains("help me") || msg == "help" ->
                 "I'm here to help! You can ask me about classes, faculty, departments, registration, campus resources, and much more. What would you like to know?"
 
             msg.contains("what can you do") || msg.contains("what do you do") ->
                 "I can help you find information about Morgan State University including academic programs, faculty contacts, registration dates, campus resources, and more. What would you like to know?"
-
 
             msg.contains("good job") || msg.contains("well done") || msg.contains("nice work") || msg == "great" ->
                 "Thank you for the kind words! I'm here whenever you need assistance."
@@ -258,9 +260,9 @@ class OpenAIService {
             msg.contains("you're helpful") || msg.contains("you are helpful") || msg.contains("very helpful") ->
                 "I'm glad I could help! Feel free to ask me anything else about Morgan State University."
 
-
             msg in listOf("sorry", "my bad", "oops", "apologies") ->
                 "No worries at all! How can I assist you today?"
+
             else -> null
         }
     }
@@ -268,7 +270,6 @@ class OpenAIService {
     private fun analyzeQuery(question: String): QueryAnalysis {
         val q = question.lowercase()
 
-        // Check for role queries first
         val roleKeywords = mapOf(
             "chair" to listOf("chair", "chairperson", "department head"),
             "director" to listOf("director", "program director"),
@@ -292,7 +293,6 @@ class OpenAIService {
             }
         }
 
-        // Check for person name queries
         val personName = extractPersonName(question)
         if (personName != null && !roleKeywords.values.flatten().any { personName.contains(it) }) {
             Log.d(TAG, "👤 PERSON QUERY detected: $personName")
@@ -309,25 +309,21 @@ class OpenAIService {
     private fun extractPersonName(question: String): String? {
         val q = question.lowercase()
 
-        // Skip if it contains role keywords
         val roleWords = listOf("chair", "director", "dean", "head", "advisor", "adviser")
         if (roleWords.any { q.contains(it) }) {
             return null
         }
 
-        // Pattern: "who is [name]"
         val whoMatch = Regex("who\\s+is\\s+(?:dr\\.?\\s+)?([a-z]+\\s+[a-z]+)").find(q)
         if (whoMatch != null) {
             return whoMatch.groupValues[1].trim()
         }
 
-        // Look for "Dr. FirstName LastName" pattern
         val drPattern = Regex("dr\\.?\\s+([a-z]+\\s+[a-z]+)").find(q)
         if (drPattern != null) {
             return drPattern.groupValues[1].trim()
         }
 
-        // Look for capitalized words (names)
         val words = question.split(Regex("\\s+"))
         val skipWords = setOf("who", "is", "the", "what", "where", "tell", "me", "about",
             "morgan", "state", "university", "computer", "science", "department", "dr", "doctor")
@@ -380,6 +376,8 @@ class OpenAIService {
     }
 
     private suspend fun getEmbedding(text: String): List<Double> {
+        if (text.isEmpty()) return emptyList()
+
         embeddingCache[text]?.let { return it }
 
         return try {
@@ -395,11 +393,12 @@ class OpenAIService {
                 .post(body)
                 .build()
 
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            withContext(Dispatchers.IO) {
                 val response = client.newCall(request).execute()
                 val responseBody = response.body?.string()
 
                 if (!response.isSuccessful) {
+                    Log.e(TAG, "Embedding API error: ${response.code}")
                     return@withContext emptyList<Double>()
                 }
 
@@ -417,7 +416,7 @@ class OpenAIService {
                 embedding
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Embedding error", e)
+            Log.e(TAG, "Embedding error: ${e.message}", e)
             emptyList()
         }
     }
@@ -453,16 +452,13 @@ class OpenAIService {
         val textLower = text.lowercase()
         val termLower = searchTerm.lowercase()
 
-        // Exact match
         if (textLower.contains(termLower)) return true
 
-        // Check each word
         val termParts = termLower.split(" ").filter { it.length > 2 }
         for (part in termParts) {
             if (textLower.contains(part)) return true
         }
 
-        // Fuzzy match
         val textWords = textLower.split(Regex("\\s+"))
         for (part in termParts) {
             for (word in textWords) {
@@ -501,12 +497,10 @@ class OpenAIService {
         var currentSection = mutableListOf<String>()
         var inRoleSection = false
 
-        for (i in lines.indices) {
-            val line = lines[i]
+        for (line in lines) {
             val lineLower = line.lowercase()
             val trimmedLine = line.trim()
 
-            // Section boundary detection
             val isSectionBoundary = trimmedLine.isEmpty() ||
                     trimmedLine.matches(Regex("^[=\\-#*]{3,}.*")) ||
                     trimmedLine.matches(Regex("^###.*"))
@@ -520,7 +514,6 @@ class OpenAIService {
                 continue
             }
 
-            // Check if this line contains the role keyword
             if (lineLower.contains(roleKeyword) ||
                 (roleKeyword == "chair" && (lineLower.contains("chairperson") || lineLower.contains("department head")))) {
                 inRoleSection = true
@@ -538,14 +531,123 @@ class OpenAIService {
         return relevantSections.joinToString("\n\n")
     }
 
+
+
+    private suspend fun getStudentProfileSummary(): String {
+        val uid = currentUserId ?: return ""
+
+        return try {
+            val doc = db.collection("users")
+                .document(uid)
+                .collection("degreeworks")
+                .document("latest")
+                .get()
+                .await()
+
+            if (!doc.exists()) return ""
+
+            val data = doc.data ?: return ""
+            val preview = data["json_preview"] as? Map<*, *> ?: return ""
+
+            val sb = StringBuilder()
+
+            // Student metadata
+            val major = preview["major"] as? String
+            val classification = preview["classification"] as? String
+            val advisor = preview["advisor"] as? String
+            val standing = preview["academic_standing"] as? String
+            val graduationStatus = preview["graduation_status"] as? String
+
+            if (major != null) {
+                sb.append("You are a $major major")
+                if (classification != null) {
+                    sb.append(" ($classification)")
+                }
+                sb.append(". ")
+            }
+
+            if (advisor != null) {
+                sb.append("Your academic advisor is $advisor. ")
+            }
+
+            // GPA and credits
+            val gpa = (preview["gpa"] as? Number)?.toDouble()
+            val transferHours = (preview["transfer_hours"] as? Number)?.toInt()
+            val totalCompletedCredits = (preview["total_completed_credits"] as? Number)?.toDouble()
+
+            if (gpa != null) {
+                sb.append("Your GPA is ").append(String.format("%.3f", gpa)).append(". ")
+            }
+
+            if (transferHours != null) {
+                sb.append("You transferred $transferHours credits from previous institutions. ")
+            }
+
+            if (totalCompletedCredits != null && totalCompletedCredits > 0.0) {
+                sb.append("At Morgan State, you have completed ").append(totalCompletedCredits).append(" credits. ")
+            }
+
+            // CURRENT SEMESTER
+            val currentTerm = preview["current_term"] as? String
+            val currentTermCredits = (preview["current_term_credits"] as? Number)?.toDouble()
+            val currentTermCourses = (preview["current_term_courses"] as? List<*>)?.mapNotNull { it as? String } ?: emptyList()
+
+            if (!currentTerm.isNullOrBlank() && currentTermCourses.isNotEmpty()) {
+                sb.append("\n\nCURRENT SEMESTER ($currentTerm):\n")
+                sb.append("You are currently taking $currentTermCredits credits:\n")
+                currentTermCourses.forEach { course ->
+                    sb.append("- $course\n")
+                }
+            }
+
+            // Add semester history...
+            val semesters = preview["semesters"] as? List<*>
+            if (semesters != null && semesters.isNotEmpty()) {
+                sb.append("\n\nCOMPLETED COURSE HISTORY:\n")
+
+                semesters.forEach { semesterObj ->
+                    val semester = semesterObj as? Map<*, *>
+                    if (semester != null) {
+                        val term = semester["term"] as? String
+                        val courses = semester["courses"] as? List<*>
+                        val totalCredits = (semester["total_credits"] as? Number)?.toDouble()
+
+                        if (term != null && courses != null && courses.isNotEmpty()) {
+                            sb.append("\n$term ($totalCredits credits):\n")
+
+                            courses.forEach { courseObj ->
+                                val course = courseObj as? Map<*, *>
+                                if (course != null) {
+                                    val code = course["course"] as? String
+                                    val title = course["title"] as? String
+                                    val grade = course["grade"] as? String
+
+                                    sb.append("  - $code")
+                                    if (grade != null && grade != "IP") {
+                                        sb.append(" (Grade: $grade)")
+                                    }
+                                    sb.append("\n")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            sb.toString().trim()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error loading student profile: ${e.message}", e)
+            ""
+        }
+    }
+
     private fun extractPersonSection(docText: String, personName: String): String {
         val lines = docText.split("\n")
         val relevantSections = mutableListOf<String>()
         var currentSection = mutableListOf<String>()
         var inPersonSection = false
 
-        for (i in lines.indices) {
-            val line = lines[i]
+        for (line in lines) {
             val trimmedLine = line.trim()
 
             val isSectionBoundary = trimmedLine.isEmpty() ||
@@ -580,72 +682,122 @@ class OpenAIService {
         val cacheKey = userQuestion.lowercase().take(50)
         contextCache[cacheKey]?.let { (cached, time) ->
             if (System.currentTimeMillis() - time < CACHE_DURATION) {
-                Log.d(TAG, "⚡ Using cache")
+                Log.d(TAG, "⚡ Using cached context")
                 return cached
             }
         }
 
         return try {
-            Log.d(TAG, "🤖 HYBRID AI search...")
+            Log.d(TAG, "🤖 Searching knowledge base...")
 
             val questionEmbedding = getEnhancedEmbedding(userQuestion, analysis)
             if (questionEmbedding.isEmpty()) {
-                return "Error processing question."
+                Log.e(TAG, "Failed to generate question embedding")
+                return "Unable to process your question. Please try again."
             }
 
-            val snapshot = db.collection("knowledge_base").get().await()
+            val snapshot = db.collection("knowledge_base")
+                .limit(8)
+                .get()
+                .await()
+
+            if (snapshot.isEmpty) {
+                Log.w(TAG, "Knowledge base is empty")
+                return "Knowledge base is currently empty. Please try again later."
+            }
+
+            Log.d(TAG, "Found ${snapshot.size()} documents in knowledge base")
+
             val similarities = mutableListOf<Triple<String, Double, String>>()
 
-            for (doc in snapshot.documents) {
-                val docId = doc.id
-                val docData = doc.data ?: continue
-                val docText = formatData(docData)
+            try {
+                // ✅ Use coroutineScope to create proper context for async
+                coroutineScope {
+                    val embeddingJobs = snapshot.documents.map { doc ->
+                        async(Dispatchers.Default) {
+                            try {
+                                val docId = doc.id
+                                val docData = doc.data ?: return@async null
+                                val docText = formatData(docData)
 
-                val docEmbedding = getEmbedding(docText.take(2000))
-                if (docEmbedding.isEmpty()) continue
+                                delay(50)
 
-                val baseSim = cosineSimilarity(questionEmbedding, docEmbedding)
+                                val docEmbedding = getEmbedding(docText.take(2000))
+                                if (docEmbedding.isEmpty()) return@async null
 
-                var boost = 0.0
-                val docLower = docText.lowercase()
+                                val baseSim = cosineSimilarity(questionEmbedding, docEmbedding)
 
-                when (analysis.intent) {
-                    QueryIntent.ROLE_QUERY -> {
-                        analysis.roleKeyword?.let { role ->
-                            if (docLower.contains(role) ||
-                                (role == "chair" && (docLower.contains("chairperson") || docLower.contains("department head")))) {
-                                boost = 0.6
-                                Log.d(TAG, "🎯 ROLE '$role' found in $docId +BOOST($boost)")
+                                var boost = 0.0
+                                val docLower = docText.lowercase()
+
+                                when (analysis.intent) {
+                                    QueryIntent.ROLE_QUERY -> {
+                                        analysis.roleKeyword?.let { role ->
+                                            if (docLower.contains(role) ||
+                                                (role == "chair" && (docLower.contains("chairperson") || docLower.contains("department head")))) {
+                                                boost = 0.6
+                                                Log.d(TAG, "🎯 ROLE '$role' found in $docId")
+                                            }
+                                        }
+                                    }
+                                    QueryIntent.PERSON_QUERY -> {
+                                        analysis.personName?.let { name ->
+                                            if (fuzzyContains(docText, name)) {
+                                                boost = 0.4
+                                                Log.d(TAG, "🎯 PERSON '$name' found in $docId")
+                                            }
+                                        }
+                                    }
+                                    QueryIntent.GENERAL_QUERY -> {
+                                        boost = 0.0
+                                    }
+                                }
+
+                                val finalSim = (baseSim + boost).coerceAtMost(1.0)
+                                Triple(docId, finalSim, docText)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error processing document: ${e.message}")
+                                null
                             }
                         }
                     }
-                    QueryIntent.PERSON_QUERY -> {
-                        analysis.personName?.let { name ->
-                            if (fuzzyContains(docText, name)) {
-                                boost = 0.4
-                                Log.d(TAG, "🎯 PERSON '$name' found in $docId +BOOST($boost)")
+
+                    val results = withTimeoutOrNull(30000L) {
+                        embeddingJobs.awaitAll()
+                    }
+
+                    if (results != null) {
+                        for (result in results) {
+                            if (result != null) {
+                                similarities.add(result)
+                                Log.d(TAG, "📊 ${result.first}: ${(result.second * 100).toInt()}%")
                             }
                         }
-                    }
-                    QueryIntent.GENERAL_QUERY -> {
-                        boost = 0.0
                     }
                 }
 
-                val finalSim = (baseSim + boost).coerceAtMost(1.0)
-                similarities.add(Triple(docId, finalSim, docText))
-                Log.d(TAG, "📊 $docId: ${(finalSim * 100).toInt()}%")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error during parallel embedding: ${e.message}", e)
+                return "Error processing embeddings. Please try again."
+            }
+
+            if (similarities.isEmpty()) {
+                Log.w(TAG, "No similar documents found")
+                return "No relevant information found for your question. Try rephrasing it."
             }
 
             val topDocs = similarities.sortedByDescending { it.second }.take(3)
-            Log.d(TAG, "🏆 Top: ${topDocs.map { "${it.first}(${(it.second * 100).toInt()}%)" }}")
+            Log.d(TAG, "🏆 Top results: ${topDocs.map { "${it.first}(${(it.second * 100).toInt()}%)" }}")
 
             val contextSnippets = mutableListOf<Triple<Double, String, String>>()
 
             when (analysis.intent) {
                 QueryIntent.ROLE_QUERY -> {
                     analysis.roleKeyword?.let { role ->
-                        topDocs.forEach { (docId, sim, docText) ->
+                        for (doc in topDocs) {
+                            val docId = doc.first
+                            val sim = doc.second
+                            val docText = doc.third
                             val section = extractRoleSection(docText, role)
                             if (section.isNotEmpty()) {
                                 contextSnippets.add(Triple(sim, docId, section))
@@ -655,7 +807,10 @@ class OpenAIService {
                 }
                 QueryIntent.PERSON_QUERY -> {
                     analysis.personName?.let { name ->
-                        topDocs.forEach { (docId, sim, docText) ->
+                        for (doc in topDocs) {
+                            val docId = doc.first
+                            val sim = doc.second
+                            val docText = doc.third
                             if (fuzzyContains(docText, name)) {
                                 val section = extractPersonSection(docText, name)
                                 if (section.isNotEmpty()) {
@@ -666,14 +821,19 @@ class OpenAIService {
                     }
                 }
                 QueryIntent.GENERAL_QUERY -> {
-                    topDocs.forEach { (docId, sim, docText) ->
+                    for (doc in topDocs) {
+                        val docId = doc.first
+                        val sim = doc.second
+                        val docText = doc.third
                         contextSnippets.add(Triple(sim, docId, docText.take(2000)))
                     }
                 }
             }
 
-            // Add general context if needed
-            topDocs.forEach { (docId, sim, docText) ->
+            for (doc in topDocs) {
+                val docId = doc.first
+                val sim = doc.second
+                val docText = doc.third
                 val alreadyAdded = contextSnippets.any { it.second == docId }
                 if (!alreadyAdded) {
                     contextSnippets.add(Triple(sim, docId, docText.take(1500)))
@@ -682,22 +842,30 @@ class OpenAIService {
 
             val sortedSnippets = contextSnippets.sortedByDescending { it.first }
 
+            if (sortedSnippets.isEmpty()) {
+                Log.w(TAG, "No relevant snippets extracted")
+                return "Unable to find relevant information. Try rewording your question."
+            }
+
             val context = StringBuilder()
-            sortedSnippets.forEach { (sim, docId, text) ->
-                context.append("\n=== $docId (${(sim * 100).toInt()}%) ===\n")
+            for (snippet in sortedSnippets) {
+                val sim = snippet.first
+                val docId = snippet.second
+                val text = snippet.third
+                context.append("\n=== From $docId (Relevance: ${(sim * 100).toInt()}%) ===\n")
                 context.append(text).append("\n")
             }
 
             val result = context.toString()
             val limited = if (result.length > 6000) result.take(6000) else result
 
-            Log.d(TAG, "✅ Context: ${limited.length} chars")
+            Log.d(TAG, "✅ Context retrieved: ${limited.length} chars")
             contextCache[cacheKey] = Pair(limited, System.currentTimeMillis())
             limited
 
         } catch (e: Exception) {
-            Log.e(TAG, "Error", e)
-            "Error accessing database."
+            Log.e(TAG, "Critical error in getRelevantContext: ${e.message}", e)
+            "System error occurred. Please try again shortly."
         }
     }
 
@@ -722,87 +890,108 @@ class OpenAIService {
         return sb.toString()
     }
 
-    private fun buildSystemPrompt(context: String, analysis: QueryAnalysis): String {
+    private fun buildSystemPrompt(
+        context: String,
+        analysis: QueryAnalysis,
+        studentProfile: String
+    ): String {
         val baseInstructions = """
-            You are Morgan State University's AI assistant.
-            
-            CRITICAL FORMATTING RULES:
-            ❌ DO NOT use any asterisks (*) in your response
-            ❌ DO NOT use markdown formatting like **bold** or *italic*
-            ❌ DO NOT use any special formatting symbols
-            ✅ Write in plain, natural text without any formatting
-            ✅ Use simple punctuation only: periods, commas, colons
-            
-            INSTRUCTIONS:
-            ✅ Answer using ONLY the knowledge base below
-            ✅ The knowledge base is ordered by relevance - prioritize the FIRST document
-            ✅ Extract exact details: names, emails, phones, dates, URLs
-            ✅ Write responses in plain text like a normal conversation
-            ✅ Be conversational and helpful
-            ✅ If you cannot find an exact match, provide the closest related information from the knowledge base
-            ✅ Always try to be helpful by providing the most relevant information available
-            
-            ❌ Don't make up information
-            ❌ Don't confuse different people
-            ❌ Don't use asterisks or any formatting symbols
-            ❌ Don't say "I don't have that information" - instead provide the closest related information
-        """.trimIndent()
+        You are Morgan State University's AI assistant.
+        
+        STUDENT ACADEMIC PROFILE (if available):
+        ${if (studentProfile.isBlank()) "No DegreeWorks profile is available for this user yet." else studentProfile}
+        
+        CRITICAL FORMATTING RULES:
+        - DO NOT use asterisks (*) or any markdown formatting
+        - DO NOT use bold, italic, or any special formatting
+        - Write in plain, natural text only
+        - Use simple punctuation: periods, commas, colons, parentheses only
+        
+        RESPONSE INSTRUCTIONS:
+        - Answer ONLY using information from the knowledge base and the student profile below
+        - The knowledge base is ordered by relevance - prioritize the first documents
+        - Extract exact details: names, emails, phones, dates, URLs
+        - When the question is about the student's situation (GPA, courses, credits, remaining requirements),
+          use the STUDENT ACADEMIC PROFILE section above
+        - Be conversational and helpful
+        - If exact information isn't found, provide the closest related information
+        - Try your best to be helpful - don't say "I don't have that information"
+        
+        WHAT NOT TO DO:
+        - Don't make up information
+        - Don't confuse different people
+        - Don't use asterisks or formatting symbols
+        - Don't apologize for limitations
+    """.trimIndent()
 
         val specificInstructions = when (analysis.intent) {
             QueryIntent.ROLE_QUERY -> {
                 """
-                
-                ROLE QUERY INSTRUCTIONS:
-                ✅ Look for the role keyword: "${analysis.roleKeyword}"
-                ✅ Find the person who holds this position
-                ✅ Provide their name, title, contact information in plain text sentences
-                ✅ DO NOT confuse with other faculty members
-                ✅ Write naturally without any formatting symbols
-                ✅ If the exact role isn't found, provide information about related positions or the department
-                
-                Example format: The Chair of the Computer Science Department is Dr. Paul Wang. You can reach him at paul.wang@morgan.edu or call (443) 885-4508. His office is located in McMechen Hall 507.
-                """.trimIndent()
+            
+            ROLE QUERY - Find: ${analysis.roleKeyword}
+            - Look for the specific role mentioned
+            - Find the person who holds this position
+            - Provide their name, title, email, phone, office location
+            - Write in natural sentences like you're talking to a friend
+            """.trimIndent()
             }
             QueryIntent.PERSON_QUERY -> {
                 """
-                
-                PERSON QUERY INSTRUCTIONS:
-                ✅ Focus on: "${analysis.personName}"
-                ✅ Provide their title, role, and contact details in plain text
-                ✅ Write in natural, conversational sentences without formatting
-                ✅ If the exact person isn't found, provide information about similar faculty or staff members
-                """.trimIndent()
+            
+            PERSON QUERY - Find information about: ${analysis.personName}
+            - Locate details about this specific person
+            - Provide their title, role, contact information
+            - Write in natural, conversational sentences
+            - Be accurate and don't confuse with other faculty
+            """.trimIndent()
             }
             QueryIntent.GENERAL_QUERY -> {
                 """
-                
-                GENERAL QUERY INSTRUCTIONS:
-                ✅ Provide the most relevant information from the knowledge base
-                ✅ If an exact answer isn't available, provide related information that might be helpful
-                ✅ Be conversational and guide the user to the right resources
-                ✅ Use plain text without any formatting symbols
-                """.trimIndent()
+            
+            GENERAL QUERY
+            - Provide the most relevant and helpful information available
+            - Answer the user's question as directly as possible
+            - Guide them to relevant resources if needed
+            - Use plain text, no formatting
+            """.trimIndent()
             }
         }
 
         return """
-            $baseInstructions
-            $specificInstructions
-            
-            KNOWLEDGE BASE (ordered by relevance):
-            $context
-            
-            Answer accurately and naturally from the information above in PLAIN TEXT ONLY. DO NOT use asterisks or any markdown formatting whatsoever.
-        """.trimIndent()
+        $baseInstructions
+        $specificInstructions
+        
+        KNOWLEDGE BASE (ordered by relevance):
+        $context
+        
+        Answer the user's question accurately and naturally. Use PLAIN TEXT ONLY - absolutely NO asterisks, NO markdown, NO special formatting.
+    """.trimIndent()
     }
+
 
     suspend fun getChatResponse(userMessage: String): String {
         return try {
-            handleCasualConversation(userMessage)?.let { return it }
+            Log.d(TAG, "Processing message: ${userMessage.take(50)}")
+
+            handleCasualConversation(userMessage)?.let {
+                Log.d(TAG, "Casual response matched")
+                return it
+            }
 
             val analysis = analyzeQuery(userMessage)
             val context = getRelevantContext(userMessage, analysis)
-            val systemPrompt = buildSystemPrompt(context, analysis)
+
+// NEW: add DegreeWorks summary
+            val studentProfile = getStudentProfileSummary()
+
+            if (context.contains("Error") || context.contains("error") || context.contains("Unable")) {
+                Log.w(TAG, "Context retrieval failed or returned error")
+                return context
+            }
+
+// UPDATED: pass studentProfile into prompt
+            val systemPrompt = buildSystemPrompt(context, analysis, studentProfile)
+
 
             val jsonBody = JSONObject().apply {
                 put("model", "gpt-3.5-turbo")
@@ -827,29 +1016,36 @@ class OpenAIService {
                 .post(body)
                 .build()
 
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            withContext(Dispatchers.IO) {
                 val response = client.newCall(request).execute()
                 val responseBody = response.body?.string()
 
                 if (!response.isSuccessful) {
-                    return@withContext "Sorry, connection issue. Try again."
+                    Log.e(TAG, "OpenAI API error: ${response.code} - ${response.message}")
+                    return@withContext "I'm temporarily unable to process that. Please try again in a moment."
                 }
 
-                val json = JSONObject(responseBody ?: "")
-                val message = json.getJSONArray("choices")
-                    .getJSONObject(0)
-                    .getJSONObject("message")
-                    .getString("content")
+                try {
+                    val json = JSONObject(responseBody ?: "")
+                    val message = json.getJSONArray("choices")
+                        .getJSONObject(0)
+                        .getJSONObject("message")
+                        .getString("content")
 
-                Log.d(TAG, "✅ Response ready")
-                message.trim()
+                    Log.d(TAG, "✅ Response generated successfully")
+                    message.trim()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error parsing API response: ${e.message}")
+                    "I understood your question but had trouble formulating a response. Please try again."
+                }
             }
 
         } catch (e: IOException) {
-            "Network error. Check connection."
+            Log.e(TAG, "Network error: ${e.message}")
+            "Network connection issue. Please check your internet and try again."
         } catch (e: Exception) {
-            Log.e(TAG, "Error", e)
-            "Something went wrong. Try again."
+            Log.e(TAG, "Unexpected error: ${e.message}", e)
+            "Something went wrong. Please try your question again."
         }
     }
 }

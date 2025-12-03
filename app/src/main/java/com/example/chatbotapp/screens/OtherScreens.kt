@@ -33,6 +33,11 @@ import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
+
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+
+
 // Data classes for MSU courses
 data class MSUCourse(
     val courseCode: String,
@@ -950,6 +955,9 @@ fun CurriculumContent(
 
                         takenCourses = completed.distinct() // ✅ REMOVE DUPLICATES
                         takenCoursesDetails = detailedCoursesMap.values.toList().sortedBy { it.code } // ✅ CONVERT MAP TO LIST
+                        println("TAKEN CODES: $takenCourses")
+                        println("TAKEN DETAILS: $takenCoursesDetails")
+
                     }
                 }
             } catch (e: Exception) {
@@ -960,41 +968,53 @@ fun CurriculumContent(
         }
     }
 
-
     val msuCourses = remember {
         listOf(
-            // Math Foundation
+            // Math Foundation / Supporting
             MSUCourse("MATH 241", "Calculus I", 4, listOf("ENGR 101, MATH 114, MATH 141"), listOf("Fall", "Spring"), "Math"),
-            MSUCourse("MATH 242", "Calculus II", 4, listOf("MATH 241 (Grade C or higher)"), listOf("Fall", "Spring"), "Math"),
+            MSUCourse("MATH 242", "Calculus II (MQ)", 4, listOf("MATH 241 (Grade C or higher)"), listOf("Fall", "Spring"), "Math"),
             MSUCourse("MATH 312", "Linear Algebra I", 3, listOf("MATH 241 (Grade C or higher)"), listOf("Fall", "Spring"), "Math"),
             MSUCourse("MATH 331", "Applied Probability and Statistics", 3, listOf("MATH 242 (Grade C or higher)"), listOf("Fall", "Spring"), "Math"),
 
-            // Core CS Courses
+            // Computer Ethics / Supporting
+            MSUCourse("COSC 201", "Computer Ethics", 1, emptyList(), listOf("Fall", "Spring"), "Core CS"),
+
+            // Core CS Requirements
             MSUCourse("COSC 111", "Introduction to Computer Science I", 4, emptyList(), listOf("Fall", "Spring"), "Core CS"),
             MSUCourse("COSC 112", "Introduction to Computer Science II", 4, listOf("COSC 111 (Grade C or higher)"), listOf("Fall", "Spring"), "Core CS"),
             MSUCourse("COSC 220", "Data Structures and Algorithms Analysis", 4, listOf("COSC 112 (Grade C or higher)"), listOf("Fall", "Spring"), "Core CS"),
-            MSUCourse("COSC 238", "Object Oriented Programming", 4, listOf("COSC 112 (Grade C or higher)"), listOf("Fall", "Spring"), "Core CS"),
             MSUCourse("COSC 241", "Computer Systems & Digital Logic", 3, listOf("COSC 112, MATH 141 (Grade C or higher)"), listOf("Fall", "Spring"), "Core CS"),
             MSUCourse("COSC 281", "Discrete Structures", 3, listOf("COSC 112 (Grade C or higher)"), listOf("Fall", "Spring"), "Core CS"),
 
-            // Advanced Courses
-            MSUCourse("COSC 320", "Algorithm Design and Analysis", 3, listOf("COSC 220, COSC 281 (Grade C or higher)"), listOf("Fall", "Spring"), "Advanced"),
-            MSUCourse("COSC 354", "Operating Systems", 3, listOf("COSC 220, COSC 241 (Grade C or higher)"), listOf("Fall", "Spring"), "Advanced"),
+            // Additional required CS
+            MSUCourse("COSC 349", "Computer Networks", 3, listOf("COSC 243 or equivalent (Grade C or higher)"), listOf("Fall", "Spring"), "Advanced"), // prereq summarized [web:35]
+            MSUCourse("COSC 351", "Cybersecurity", 3, listOf("COSC 112 (Grade C or higher)"), listOf("Fall", "Spring"), "Advanced"),
             MSUCourse("COSC 352", "Organization of Programming Languages", 3, listOf("COSC 220 (Grade C or higher)"), listOf("Fall", "Spring"), "Advanced"),
+            MSUCourse("COSC 354", "Operating Systems", 3, listOf("COSC 220, COSC 241 (Grade C or higher)"), listOf("Fall", "Spring"), "Advanced"),
+            MSUCourse("COSC 458", "Software Engineering", 3, listOf("COSC 220 (Grade C or higher)"), listOf("Fall", "Spring"), "Advanced"),
             MSUCourse("COSC 459", "Database Design", 3, listOf("COSC 220 (Grade C or higher)"), listOf("Fall", "Spring"), "Advanced"),
 
-            // Specialized Electives
-            MSUCourse("COSC 470", "Artificial Intelligence", 3, listOf("COSC 220 (Grade C or higher)"), listOf("Fall", "Spring"), "Electives"),
-            MSUCourse("COSC 472", "Intro to Machine Learning", 3, listOf("COSC 112, MATH 312 (Grade C or higher)"), listOf("Fall", "Spring"), "Electives"),
-            MSUCourse("COSC 338", "Mobile App Design and Development", 3, listOf("COSC 238 (Grade C or higher)"), listOf("Fall", "Spring"), "Electives"),
-            MSUCourse("COSC 351", "Foundations of Computer Security", 3, listOf("COSC 112 (Grade C or higher)"), listOf("Fall", "Spring"), "Electives"),
-            MSUCourse("COSC 460", "Computer Graphics", 3, listOf("COSC 220, MATH 241 (Grade C or higher)"), listOf("Fall", "Spring"), "Electives"),
-            MSUCourse("COSC 332", "Introduction to Game Design and Development", 3, listOf("COSC 112 (Grade C or higher)"), listOf("Fall", "Spring"), "Electives"),
+            // Group A Electives (examples from your audit)
+            MSUCourse("COSC 238", "Object Oriented Programming", 4, listOf("COSC 112 (Grade C or higher)"), listOf("Fall", "Spring"), "Electives"),
+            MSUCourse("COSC 251", "Introduction to Data Science", 3, listOf("COSC 112 (Grade C or higher)"), listOf("Fall", "Spring"), "Electives"),
             MSUCourse("CLCO 261", "Intro to Cloud Computing", 3, listOf("COSC 112 (Grade C or higher)"), listOf("Fall", "Spring"), "Electives"),
 
-            // Capstone
-            MSUCourse("COSC 490", "Senior Project", 3, listOf("Department Chair permission", "Senior standing required"), listOf("As Needed"), "Capstone"),
-            MSUCourse("COSC 001", "CS Senior Comprehensive Exam", 0, emptyList(), listOf("As Needed"), "Capstone")
+            // Group B Electives
+            MSUCourse("COSC 323", "Introduction to Cryptography", 3, listOf("COSC 220, COSC 281 (Grade C or higher)"), listOf("Fall", "Spring"), "Electives"),
+        MSUCourse("COSC 385", "Theory of Languages & Automata", 3, listOf("COSC 281 (Grade C or higher)"), listOf("Fall", "Spring"), "Electives"),
+
+        // Group C Electives
+        MSUCourse("COSC 470", "Artificial Intelligence", 3, listOf("COSC 220 (Grade C or higher)"), listOf("Fall", "Spring"), "Electives"),
+        MSUCourse("COSC 472", "Intro to Machine Learning", 3, listOf("COSC 112, MATH 312 (Grade C or higher)"), listOf("Fall", "Spring"), "Electives"),
+        MSUCourse("COSC 498", "Senior Internship", 3, listOf("Department permission"), listOf("Fall", "Spring"), "Electives"),
+        MSUCourse("COSC 499", "Senior Research / Teaching Assistant", 3, listOf("Department permission"), listOf("Fall", "Spring"), "Electives"),
+
+        // Group D Electives
+        MSUCourse("COSC 345", "Intro to High Performance Computing", 3, listOf("Some programming background"), listOf("Fall", "Spring"), "Electives"),
+
+        // Capstone / Senior
+        MSUCourse("COSC 490", "Senior Project", 3, listOf("Senior standing, department permission"), listOf("As Needed"), "Capstone"),
+        MSUCourse("COSC 001", "Computer Science Senior Comprehensive Exam", 0, emptyList(), listOf("As Needed"), "Capstone")
         )
     }
 
@@ -1619,4 +1639,45 @@ fun SettingsCard(
             )
         }
     }
+}
+
+suspend fun loadTakenCoursesFromDegreeWorks(
+    db: FirebaseFirestore,
+    uid: String
+): List<CompletedCourse> {
+    val doc = db.collection("users")
+        .document(uid)
+        .collection("degreeworks")
+        .document("latest")
+        .get()
+        .await()
+
+    val data = doc.data ?: return emptyList()
+    val preview = data["json_preview"] as? Map<*, *> ?: return emptyList()
+    val sections = preview["sections"] as? List<*> ?: return emptyList()
+
+    val result = mutableListOf<CompletedCourse>()
+
+    for (sec in sections) {
+        val secMap = sec as? Map<*, *> ?: continue
+        val completed = secMap["completed_courses"] as? List<*> ?: continue
+
+        for (c in completed) {
+            val map = c as? Map<*, *> ?: continue
+            val code = map["course"] as? String ?: continue
+            val title = map["title"] as? String ?: ""
+            val grade = map["grade"] as? String ?: ""
+            val credits = (map["credits"] as? String ?: "").trim()
+
+            result.add(
+                CompletedCourse(
+                    code = code,
+                    title = title,
+                    grade = grade,
+                    credits = credits
+                )
+            )
+        }
+    }
+    return result
 }

@@ -48,6 +48,19 @@ import kotlinx.coroutines.launch
 import com.example.chatbotapp.R
 import android.util.Log
 
+import android.content.Intent
+import android.os.Bundle
+import android.speech.RecognizerIntent
+import android.speech.RecognitionListener
+import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
+
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+
+import java.util.Locale
+
+
 // Dark theme colors
 private val ChatDarkBg = Color(0xFF1E1E2E)
 private val ChatCardBg = Color(0xFF2A2A3E)
@@ -81,6 +94,24 @@ fun ChatContent(
             "📝 How to register for classes?"
         )
     }
+
+    val context = LocalContext.current
+    var tts by remember { mutableStateOf<TextToSpeech?>(null) }
+
+    LaunchedEffect(Unit) {
+        tts = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                tts?.language = Locale.US
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            tts?.shutdown()
+        }
+    }
+
 
     val backgroundBrush = Brush.verticalGradient(
         colors = listOf(
@@ -180,7 +211,7 @@ fun ChatContent(
                         items = chatSession.messages,
                         key = { message -> "${message.timestamp}-${message.isUser}-${message.text.take(50).hashCode()}" }
                     ) { message ->
-                        DarkMessageBubble(message)
+                        DarkMessageBubble(message = message, tts = tts)
                     }
 
                     if (isTyping) {
@@ -639,8 +670,13 @@ fun SuggestedPromptCard(
     }
 }
 
+// Replace the DarkMessageBubble function with this corrected version:
+
 @Composable
-fun DarkMessageBubble(message: ChatMessage) {
+fun DarkMessageBubble(
+    message: ChatMessage,
+    tts: TextToSpeech?
+) {
     var visible by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -697,35 +733,47 @@ fun DarkMessageBubble(message: ChatMessage) {
                 shadowElevation = 6.dp,
                 border = if (!message.isUser) BorderStroke(1.dp, AccentGlow) else null
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    ClickableMessageText(
-                        text = message.text,
-                        isUser = message.isUser
-                    )
-                }
-            }
-
-            if (message.isUser) {
-                Spacer(modifier = Modifier.width(8.dp))
-                Box(
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .background(AccentGlow),
-                    contentAlignment = Alignment.Center
+                        .fillMaxWidth()
+                        .padding(16.dp)
                 ) {
-                    Icon(
-                        Icons.Filled.Person,
-                        contentDescription = "You",
-                        modifier = Modifier.size(20.dp),
-                        tint = LightText
-                    )
+                    Box(
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        ClickableMessageText(
+                            text = message.text,
+                            isUser = message.isUser
+                        )
+                    }
+
+                    if (!message.isUser) {
+                        Icon(
+                            imageVector = Icons.Filled.VolumeUp,
+                            contentDescription = "Read aloud",
+                            tint = MorganOrange,
+                            modifier = Modifier
+                                .size(22.dp)
+                                .padding(start = 8.dp)
+                                .clickable {
+                                    tts?.speak(
+                                        message.text,
+                                        TextToSpeech.QUEUE_FLUSH,
+                                        null,
+                                        "AI_MESSAGE_TTS"
+                                    )
+                                }
+                        )
+                    }
                 }
             }
         }
     }
 }
 
+// Move ClickableMessageText OUTSIDE of DarkMessageBubble as a separate function:
 @Composable
 fun ClickableMessageText(
     text: String,
@@ -794,6 +842,7 @@ fun ClickableMessageText(
     }
 }
 
+// Keep extractDisplayName as a top-level function (outside composables):
 fun extractDisplayName(url: String): String {
     return when {
         url.contains("morgan.edu/calendar") -> "📅 Morgan State Calendar"
@@ -878,79 +927,183 @@ fun PremiumInputArea(
     isTyping: Boolean,
     onSendMessage: () -> Unit
 ) {
+    val context = LocalContext.current
+    var statusMessage by remember { mutableStateOf("") }
+
+    // Use Activity Result API for voice input - more reliable than SpeechRecognizer
+    val voiceInputLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val spokenText = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.get(0)
+            if (!spokenText.isNullOrEmpty()) {
+                Log.d("VoiceInput", "✅ Recognized: $spokenText")
+                onInputChange(TextFieldValue(spokenText))
+                statusMessage = "Got it!"
+
+                kotlinx.coroutines.MainScope().launch {
+                    delay(2000)
+                    statusMessage = ""
+                }
+            } else {
+                statusMessage = "No speech detected"
+                kotlinx.coroutines.MainScope().launch {
+                    delay(2000)
+                    statusMessage = ""
+                }
+            }
+        } else {
+            Log.d("VoiceInput", "Voice input cancelled or failed")
+            statusMessage = "Voice input cancelled"
+            kotlinx.coroutines.MainScope().launch {
+                delay(2000)
+                statusMessage = ""
+            }
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            // Launch voice input activity
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak now... 🎤")
+            }
+            try {
+                voiceInputLauncher.launch(intent)
+            } catch (e: Exception) {
+                Log.e("VoiceInput", "Error launching voice input: ${e.message}")
+                statusMessage = "Voice input not available"
+            }
+        } else {
+            statusMessage = "Microphone permission denied"
+        }
+    }
+
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = ChatCardBg.copy(alpha = 0.95f),
         shadowElevation = 16.dp
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            IconButton(
-                onClick = { },
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(CircleShape)
-                    .background(AccentGlow)
+        Column {
+            // Status message banner
+            AnimatedVisibility(
+                visible = statusMessage.isNotEmpty(),
+                enter = slideInVertically() + fadeIn(),
+                exit = slideOutVertically() + fadeOut()
             ) {
-                Icon(
-                    Icons.Filled.Mic,
-                    contentDescription = "Voice",
-                    tint = MorganOrange
-                )
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MorganOrange.copy(alpha = 0.3f)
+                ) {
+                    Text(
+                        text = statusMessage,
+                        modifier = Modifier.padding(8.dp),
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            color = LightText,
+                            fontWeight = FontWeight.Medium
+                        ),
+                        textAlign = TextAlign.Center
+                    )
+                }
             }
 
-            OutlinedTextField(
-                value = userInput,
-                onValueChange = onInputChange,
+            Row(
                 modifier = Modifier
-                    .weight(1f)
-                    .heightIn(min = 56.dp, max = 120.dp),
-                placeholder = {
-                    Text(
-                        "Ask me anything...",
-                        color = LightText.copy(alpha = 0.5f)
-                    )
-                },
-                shape = RoundedCornerShape(28.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = MorganOrange,
-                    unfocusedBorderColor = AccentGlow,
-                    cursorColor = MorganOrange,
-                    focusedContainerColor = ChatDarkBg.copy(alpha = 0.5f),
-                    unfocusedContainerColor = ChatDarkBg.copy(alpha = 0.3f),
-                    focusedTextColor = LightText,
-                    unfocusedTextColor = LightText
-                ),
-                enabled = !isTyping
-            )
-
-            FloatingActionButton(
-                onClick = onSendMessage,
-                modifier = Modifier.size(56.dp),
-                containerColor = if (userInput.text.isBlank() || isTyping)
-                    AccentGlow
-                else MorganOrange,
-                elevation = FloatingActionButtonDefaults.elevation(
-                    defaultElevation = if (userInput.text.isBlank()) 0.dp else 8.dp
-                )
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Icon(
-                    Icons.Filled.Send,
-                    contentDescription = "Send",
-                    tint = if (userInput.text.isBlank() || isTyping)
-                        LightText.copy(alpha = 0.5f)
-                    else Color.White
+                // 🎤 Mic Button - launches Google's voice input dialog
+                IconButton(
+                    onClick = {
+                        if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+                            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                            permissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+                        } else {
+                            // Launch voice input activity
+                            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                                putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak now... 🎤")
+                            }
+                            try {
+                                voiceInputLauncher.launch(intent)
+                            } catch (e: Exception) {
+                                Log.e("VoiceInput", "Error: ${e.message}")
+                                statusMessage = "Voice input not available on this device"
+                                kotlinx.coroutines.MainScope().launch {
+                                    delay(3000)
+                                    statusMessage = ""
+                                }
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(AccentGlow)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Mic,
+                        contentDescription = "Voice input",
+                        tint = MorganOrange
+                    )
+                }
+
+                // 📝 Input Field
+                OutlinedTextField(
+                    value = userInput,
+                    onValueChange = onInputChange,
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 56.dp, max = 120.dp),
+                    placeholder = {
+                        Text(
+                            "Ask me anything...",
+                            color = LightText.copy(alpha = 0.5f)
+                        )
+                    },
+                    shape = RoundedCornerShape(28.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MorganOrange,
+                        unfocusedBorderColor = AccentGlow,
+                        cursorColor = MorganOrange,
+                        focusedContainerColor = ChatDarkBg.copy(alpha = 0.5f),
+                        unfocusedContainerColor = ChatDarkBg.copy(alpha = 0.3f),
+                        focusedTextColor = LightText,
+                        unfocusedTextColor = LightText
+                    ),
+                    enabled = !isTyping
                 )
+
+                // Send Button
+                FloatingActionButton(
+                    onClick = onSendMessage,
+                    modifier = Modifier.size(56.dp),
+                    containerColor = if (userInput.text.isBlank() || isTyping)
+                        AccentGlow
+                    else MorganOrange,
+                    elevation = FloatingActionButtonDefaults.elevation(
+                        defaultElevation = if (userInput.text.isBlank()) 0.dp else 8.dp
+                    )
+                ) {
+                    Icon(
+                        Icons.Filled.Send,
+                        contentDescription = "Send",
+                        tint = if (userInput.text.isBlank() || isTyping)
+                            LightText.copy(alpha = 0.5f)
+                        else Color.White
+                    )
+                }
             }
         }
     }
 }
-
 @Composable
 fun ChatHistoryDrawer(
     chatSessions: List<ChatSession> = emptyList(),

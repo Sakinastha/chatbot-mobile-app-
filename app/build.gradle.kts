@@ -5,6 +5,8 @@ plugins {
 }
 
 android {
+
+
     namespace = "com.example.chatbotapp"
     compileSdk = 34
 
